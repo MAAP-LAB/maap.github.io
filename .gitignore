@@ -1,3 +1,4 @@
 Assets/
 /code/weights_*.pth
 /exit
+Miniconda*.sh

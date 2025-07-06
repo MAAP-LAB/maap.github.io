@@ -2,4 +2,8 @@ Assets/
 /code/weights_*.pth
 /exit
 Miniconda*.sh
-/code/wandb/
+/code/wandb/# large artifacts
+code/wandb/
+*.wandb
+*.log
+Miniconda3-*.sh

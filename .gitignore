@@ -2,4 +2,4 @@ Assets/
 /code/weights_*.pth
 /exit
 Miniconda*.sh
-/code/wandb
+/code/wandb/

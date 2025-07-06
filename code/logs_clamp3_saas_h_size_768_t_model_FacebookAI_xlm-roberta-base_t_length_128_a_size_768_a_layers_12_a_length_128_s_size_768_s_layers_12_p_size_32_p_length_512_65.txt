@@ -158,3 +158,18 @@ train_loss: 0.8387265295571225
 eval_loss: 0.575101820567182
 time: Sat Jul  5 00:32:23 2025
 
+Epoch 33
+train_loss: 0.8414983661972861
+eval_loss: 0.5687782871359177
+time: Sat Jul  5 02:13:02 2025
+
+Epoch 34
+train_loss: 0.8316797134690836
+eval_loss: 0.5823299260312365
+time: Sat Jul  5 03:58:15 2025
+
+Epoch 35
+train_loss: 0.8292374625764252
+eval_loss: 0.5908210568755637
+time: Sat Jul  5 05:44:37 2025
+

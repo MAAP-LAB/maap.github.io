@@ -338,7 +338,8 @@ if __name__ == "__main__":
             model.load_state_dict(cpu_model.state_dict())
             model.set_trainable(freeze_list)
         pre_modality = checkpoint['modality']
-        if pre_modality != "audio":
+        print(f"pre_modality: {pre_modality}")
+        if NEW_STAGE_TRAINING or pre_modality != "audio":
             pre_epoch = 0
             best_epoch = 0
             min_eval_loss = float('inf')

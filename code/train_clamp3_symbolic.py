@@ -337,19 +337,16 @@ if __name__ == "__main__":
             model.set_trainable(freeze_list)
         pre_modality = checkpoint['modality']
         print(f"pre_modality: {pre_modality}")
-        if pre_modality != "symbolic":
+        if NEW_STAGE_TRAINING or pre_modality != "symbolic":
             pre_epoch = 0
             best_epoch = 0
             min_eval_loss = float('inf')
         else:
-            # optimizer.load_state_dict(checkpoint['optimizer'])
-            # lr_scheduler.load_state_dict(checkpoint['lr_sched'])
-            # pre_epoch = checkpoint['epoch']
-            # best_epoch = checkpoint['best_epoch']
-            # min_eval_loss = checkpoint['min_eval_loss']
-            pre_epoch = 0
-            best_epoch = 0
-            min_eval_loss = float('inf')
+            optimizer.load_state_dict(checkpoint['optimizer'])
+            lr_scheduler.load_state_dict(checkpoint['lr_sched'])
+            pre_epoch = checkpoint['epoch']
+            best_epoch = checkpoint['best_epoch']
+            min_eval_loss = checkpoint['min_eval_loss']
         print(f"Successfully Loaded Checkpoint from Epoch {checkpoint['epoch']} with loss {checkpoint['min_eval_loss']}")
         checkpoint = None
     

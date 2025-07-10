@@ -4,6 +4,8 @@ Assets/Midi*
 Assets/midi*
 
 /code/weights_*.pth
+/code/weight_only/*.safetensors
+
 /exit
 Miniconda*.sh
 /code/wandb/# large artifacts

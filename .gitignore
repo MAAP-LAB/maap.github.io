@@ -1,4 +1,8 @@
-Assets/
+Assets/lmd_full*
+Assets/wikimt-x
+Assets/Midi*
+Assets/midi*
+
 /code/weights_*.pth
 /exit
 Miniconda*.sh

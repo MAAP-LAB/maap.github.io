@@ -74,7 +74,7 @@ CLAMP3_WEIGHTS_PATH = (
     "_s_size_" + str(M3_HIDDEN_SIZE) +
     "_s_layers_" + str(PATCH_NUM_LAYERS) +
     "_p_size_" + str(PATCH_SIZE) +
-    "_p_length_" + str(PATCH_LENGTH) + "_65.pth"
+    "_p_length_" + str(PATCH_LENGTH) + ".pth"
 
 )  # Path to store CLaMP3 model weights
 CLAMP3_LOGS_PATH = CLAMP3_WEIGHTS_PATH.replace("weights", "logs").replace("pth", "txt")  # Path to save training logs

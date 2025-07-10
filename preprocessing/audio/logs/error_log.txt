@@ -1,0 +1,6 @@
+Failed to process /home/elicer/clamp3/Assets/wikimt-x/audio/LGFIFMxpVhc_Half As Much.wav: torch.cat(): expected a non-empty list of Tensors
+Failed to process /home/elicer/clamp3/Assets/wikimt-x/audio/rTVjnBo96Ug_(Sittin' On) The Dock of the Bay.wav: torch.cat(): expected a non-empty list of Tensors
+Failed to process /home/elicer/clamp3/Assets/wikimt-x/audio/LGFIFMxpVhc_Half As Much.wav: torch.cat(): expected a non-empty list of Tensors
+Failed to process /home/elicer/clamp3/Assets/wikimt-x/audio/rTVjnBo96Ug_(Sittin' On) The Dock of the Bay.wav: torch.cat(): expected a non-empty list of Tensors
+Failed to process /home/elicer/clamp3/Assets/wikimt-x/audio/LGFIFMxpVhc_Half As Much.wav: torch.cat(): expected a non-empty list of Tensors
+Failed to process /home/elicer/clamp3/Assets/wikimt-x/audio/rTVjnBo96Ug_(Sittin' On) The Dock of the Bay.wav: torch.cat(): expected a non-empty list of Tensors

@@ -54,7 +54,7 @@ CLAMP3_LEARNING_RATE = 1e-5  # Learning rate for the optimizer
 CLAMP3_BATCH_SIZE = 128 #256  # Batch size per GPU (single card) during training
 LOGIT_SCALE = 1  # Scaling factor for contrastive loss
 
-NEW_STAGE_TRAINING = True # When the model was trained in next stage for creating new optimizer
+NEW_STAGE_TRAINING = False # When the model was trained in next stage for creating new optimizer
 FREEZE_TEXT = False  # Freeze the weights of the text model and text projection layer
 TEXT_DROPOUT = True  # Whether to apply dropout during text processing
 CLAMP3_DETERMINISTIC = True  # Ensures deterministic results with random seeds

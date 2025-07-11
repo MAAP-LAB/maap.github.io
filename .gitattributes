@@ -4,7 +4,8 @@ code/weights_clamp3_saas_h_size_768_t_model_FacebookAI_xlm-roberta-base_t_length
 code/weights_clamp3_saas_h_size_768_t_model_FacebookAI_xlm-roberta-base_t_length_128_a_size_768_a_layers_12_a_length_128_s_size_768_s_layers_12_p_size_32_p_length_512_65_10.safetensors.gz filter=lfs diff=lfs merge=lfs -text
 code/weights_clamp3_saas_h_size_768_t_model_FacebookAI_xlm-roberta-base_t_length_128_a_size_768_a_layers_12_a_length_128_s_size_768_s_layers_12_p_size_32_p_length_512_65_35.safetensors.gz filter=lfs diff=lfs merge=lfs -text
 
-Assets/*train*.jsonl filter=lfs diff=lfs merge=lfs -text
+Assets/train_1.jsonl filter=lfs diff=lfs merge=lfs -text
+Assets/train_2.jsonl filter=lfs diff=lfs merge=lfs -text
 Assets/*train*.jsonl.bak filter=lfs diff=lfs merge=lfs -text
 Assets/*train_1.jsonl filter=lfs diff=lfs merge=lfs -text
 Assets/*.jsonl.bak filter=lfs diff=lfs merge=lfs -text

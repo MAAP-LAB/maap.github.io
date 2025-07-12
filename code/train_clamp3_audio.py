@@ -5,51 +5,17 @@ import wandb
 import torch
 import random
 import numpy as np
-import mido
-import tempfile
-from midi2audio import FluidSynth
 from utils import *
 from config import *
 from tqdm import tqdm
 from copy import deepcopy
 import torch.distributed as dist
-import torchaudio
 from torch.amp import autocast, GradScaler
 from torch.utils.data import Dataset, DataLoader
 from torch.utils.data.distributed import DistributedSampler
 from torch.nn.parallel import DistributedDataParallel as DDP
 from transformers import AutoTokenizer, BertConfig, get_constant_schedule_with_warmup
 
-def midi_to_wave_tensor(midi_file, sf2_path='/666/midiproject/usr/share/soundfonts/FluidR3_GM.sf2'):
-    # 1. MIDI 길이 검사
-    try:
-        mid = mido.MidiFile(midi_file)
-        if mid.length > 900:
-            return None
-    except Exception as e:
-        print(e)
-        return None
-
-    # 2. MIDI → WAV (임시파일로)
-    with tempfile.NamedTemporaryFile(suffix=".wav", delete=True) as tmp_wav:
-        fs = FluidSynth(sf2_path, sample_rate=16000)
-        fs.midi_to_audio(midi_file, tmp_wav.name)
-
-        # 3. WAV → Tensor (waveform)
-        waveform, sr = torchaudio.load(tmp_wav.name)  # shape: (채널, 샘플수)
-        if sr != 16000:
-            # 필요하다면 리샘플
-            resample = torchaudio.transforms.Resample(orig_freq=sr, new_freq=16000)
-            waveform = resample(waveform)
-        waveform = waveform.mean(dim=0)  # mono로 변환 (필요시)
-        # shape: (샘플수,)
-        return waveform
-
-#</summary>
-# Json lines 파일을 행별로 파싱
-# open -> for line - json.loads
-# 샘플(dict) 리스트 변환
-#</summary>
 def list_files_in_json(json_path):
     file_list = []
     
@@ -58,11 +24,9 @@ def list_files_in_json(json_path):
             for line in f:
                 item = json.loads(line)
                 file_list.append(item)
+
     return file_list
 
-#</summary>
-# return joint MIDI path and text from batch
-#</summary>
 def collate_batch(batch):
     text_inputs, text_masks, music_inputs, music_masks = zip(*batch)
 
@@ -83,15 +47,14 @@ class TextMusicDataset(Dataset):
         elif self.mode == 'eval':
             self.datapath = os.path.dirname(CLAMP3_EVAL_JSONL)
 
-
     def text_dropout(self, item):
         candidates = []
-        if random.random() < 0.5:
-            translations = item["translations"]
-            for key in translations.keys():
-                if key != "language":
-                    candidates.append(translations[key])
-        candidates = [c for c in candidates if c is not None and len(c) > 0]
+        # if random.random() < 0.5:
+        #     translations = item["translations"]
+        #     for key in translations.keys():
+        #         if key != "language":
+        #             candidates.append(translations[key])
+        # candidates = [c for c in candidates if c is not None and len(c) > 0]
         
         if len(candidates) == 0:
             for key in item.keys():
@@ -125,63 +88,73 @@ class TextMusicDataset(Dataset):
             input_tensor = input_tensor[start:start+max_length]
         
         return input_tensor
-
-
-
+    
     def __len__(self):
         return len(self.items)
-
+    
     def __getitem__(self, idx):
         item = self.items[idx]
-        # text 처리 동일
+
+        # randomly select text from the item
         if self.mode == 'train' and TEXT_DROPOUT:
             text = self.text_dropout(item)
         else:
             text = item["analysis"]
 
+        # tokenize text and build mask for text tokens
         text_inputs = tokenizer(text, return_tensors='pt')
         text_inputs = text_inputs['input_ids'].squeeze(0)
         if text_inputs.size(0) > MAX_TEXT_LENGTH:
             text_inputs = self.random_truncate(text_inputs, MAX_TEXT_LENGTH)
         text_masks = torch.ones(text_inputs.size(0))
 
-        # MIDI → audio feature on the fly
+        # load music file
         if self.mode == 'train':
-            midi_path = random.choice(item["filepaths"]).replace('.npy', '.mid')
+            filepath = random.choice(item["filepaths"])
         else:
-            midi_path = item["filepaths"][0].replace('.npy', '.mid')
+            filepath = item["filepaths"][0]
+        filepath = self.datapath + '/' + filepath
 
-        # (여기서 변환)
-        music_inputs = midi_to_wave_tensor(midi_path)
-        # (이후는 기존과 동일)
+        music_inputs = np.load(filepath)
+        music_inputs = torch.tensor(music_inputs)
+        music_inputs = music_inputs.reshape(-1, music_inputs.size(-1))
         zero_vec = torch.zeros((1, music_inputs.size(-1)))
         music_inputs = torch.cat((zero_vec, music_inputs, zero_vec), 0)
         if music_inputs.size(0) > MAX_AUDIO_LENGTH:
             music_inputs = self.random_truncate(music_inputs, MAX_AUDIO_LENGTH)
+
+        # mask music inputs
         music_masks = torch.ones(music_inputs.size(0))
-        pad_indices = torch.ones((MAX_AUDIO_LENGTH - music_inputs.size(0), music_inputs.size(-1))).float() * 0.
-        music_inputs = torch.cat((music_inputs, pad_indices), 0)
-        music_masks = torch.cat((music_masks, torch.zeros(MAX_AUDIO_LENGTH - music_masks.size(0))), 0)
-        # 텍스트 패딩
+        
+        # pad text inputs and masks
         pad_indices = torch.ones(MAX_TEXT_LENGTH - text_inputs.size(0)).long() * tokenizer.pad_token_id
         text_inputs = torch.cat((text_inputs, pad_indices), 0)
         text_masks = torch.cat((text_masks, torch.zeros(MAX_TEXT_LENGTH - text_masks.size(0))), 0)
 
+        # pad music inputs and masks
+        pad_indices = torch.ones((MAX_AUDIO_LENGTH - music_inputs.size(0), AUDIO_HIDDEN_SIZE)).float() * 0.
+        music_inputs = torch.cat((music_inputs, pad_indices), 0)
+        music_masks = torch.cat((music_masks, torch.zeros(MAX_AUDIO_LENGTH - music_masks.size(0))), 0)
+        
         return text_inputs, text_masks, music_inputs, music_masks
-
-
-
 
 # call model with a batch of input
 def process_one_batch(batch):
     text_inputs, text_masks, music_inputs, music_masks = batch
-    loss = model(text_inputs, text_masks, music_inputs, music_masks, "audio")
+    
+    loss = model(text_inputs,
+                text_masks,
+                music_inputs,
+                music_masks,
+                "audio")
 
+    # Reduce the loss on GPU 0
     if world_size > 1:
         loss = loss.unsqueeze(0)
         dist.reduce(loss, dst=0)
         loss = loss / world_size
         dist.broadcast(loss, src=0)
+
     return loss.mean()
 
 # do one epoch for training
@@ -199,17 +172,18 @@ def train_epoch(epoch):
         total_train_loss += loss.item()
         scaler.step(optimizer)
         scaler.update()
+        
         lr_scheduler.step()
         model.zero_grad(set_to_none=True)
         tqdm_train_set.set_postfix({str(global_rank)+'_train_loss': total_train_loss / iter_idx})
         train_steps += 1
+        
+        # Log the training loss to wandb
         if global_rank==0 and CLAMP3_WANDB_LOG:
             wandb.log({"train_loss": total_train_loss / iter_idx}, step=train_steps)
-        iter_idx += 1
-        # **배치별로 메모리 해제**
-        del batch
-        torch.cuda.empty_cache()
 
+        iter_idx += 1
+        
     return total_train_loss / (iter_idx-1)
 
 # do one epoch for eval
@@ -316,7 +290,7 @@ if __name__ == "__main__":
     
     train_set = DataLoader(train_set, batch_size=CLAMP3_BATCH_SIZE, collate_fn=collate_batch, sampler=train_sampler, shuffle = (train_sampler is None))
     eval_set = DataLoader(eval_set, batch_size=CLAMP3_BATCH_SIZE, collate_fn=collate_batch, sampler=eval_sampler, shuffle = (train_sampler is None))
-# MUST CHECKIGN BATCH_SIZE OF train_set OR eval_set !!!!!!!!!!!!!!!!!!
+
     lr_scheduler = get_constant_schedule_with_warmup(optimizer = optimizer, num_warmup_steps = 1000)
 
     if CLAMP3_LOAD_CKPT and os.path.exists(CLAMP3_WEIGHTS_PATH):
@@ -338,8 +312,7 @@ if __name__ == "__main__":
             model.load_state_dict(cpu_model.state_dict())
             model.set_trainable(freeze_list)
         pre_modality = checkpoint['modality']
-        print(f"pre_modality: {pre_modality}")
-        if NEW_STAGE_TRAINING or pre_modality != "audio":
+        if pre_modality != "audio":
             pre_epoch = 0
             best_epoch = 0
             min_eval_loss = float('inf')

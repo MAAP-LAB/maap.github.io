@@ -7,14 +7,14 @@ from multiprocessing import freeze_support   # ★ 추가
 
 # ── 파라미터 설정 (필요 시 인자 파싱으로 교체) ──────────────────
 HOME = Path(os.path.expanduser("~"))
-INPUT_DIR  = Path(fr"{HOME}/maap.github.io/Assets/midicaps_mid/lmd_full/0")
-OUTPUT_DIR = Path(fr"{HOME}/maap.github.io/Assets/lmd_full_audio")
+K = 0 # 0,1,2,3,4,5,6,7,8,9,a,b,c,d,e,f; these characters consist of MidiCaps's dir 
+
+INPUT_DIR  = Path(fr"{HOME}/maap.github.io/Assets/midicaps_mid/lmd_full/{K}") 
+OUTPUT_DIR = Path(fr"{HOME}/maap.github.io/Assets/lmd_full_audio") # After extract *.npy from *.mid in midicaps_mid/lmd_full/k
+                                                                   #, All of *.wav should be deleted in OUTPUT_DIR
 SOUNDFONT  = Path(fr"{HOME}/SoundFonts/FluidR3_GM.sf2") # Required
-SAMPLE_SR  = 48000
+SAMPLE_SR  = 48000 # To change into better quallity of *.wav
 MAX_WORKERS = min(os.cpu_count(), 8)
-"""
-python extract_mert.py --input_path C:/Users/hyoun/maap.github.io/Assets/lmd_full_audio --output_path C:/Users/hyoun/maap.github.io/Assets/midicaps_npy/lmd_full_npy/0 --model_path m-a-p/MERT-v1-95M --mean_features
-"""
 # ────────────────────────────────────────────────────────────────
 
 def render_one(midi_file: Path) -> str:

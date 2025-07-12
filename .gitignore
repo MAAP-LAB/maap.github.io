@@ -1,8 +1,8 @@
-Assets/lmd_full*
 Assets/wikimt-x
-Assets/Midi*
-Assets/midi*
-
+Assets/midicaps_mid/*
+Assets/midicaps_mtf/*
+Assets/midicaps_npy/*
+Assets/midicaps.tar.gz
 /code/weights_*.pth
 /code/weight_only/*.safetensors
 
@@ -13,3 +13,6 @@ code/wandb/
 *.wandb
 *.log
 Miniconda3-*.sh
+
+.venv/
+__pycache__/

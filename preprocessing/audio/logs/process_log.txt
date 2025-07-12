@@ -7,3 +7,5 @@ Found 1000 files in total
 Found 1000 files in total
 Using device: cuda
 Found 1000 files in total
+Found 5592 files in total
+Using device: cuda

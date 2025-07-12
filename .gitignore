@@ -1,6 +1,5 @@
 Assets/wikimt-x
 Assets/midicaps_mid/*
-Assets/midicaps_mtf/*
 Assets/midicaps_npy/*
 Assets/midicaps.tar.gz
 /code/weights_*.pth

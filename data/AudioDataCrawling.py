@@ -6,7 +6,7 @@ from typing import Dict
 @dataclass
 class JamendoMusicConfig:
     client_id:str="1f75034b"
-    save_path:str = './downloads'
+    save_path:str = 'data/downloads'
     download:bool = False  # Set to True to download tracks, False to save to CSV
     offset_start:int = 0
     offset_end:int = 1000000
@@ -92,15 +92,14 @@ class JamendoMusicConfig:
                 }
         )
 
-class JamendoMusic(JamendoMusicConfig):
-    def __init__(self, args: JamendoMusicConfig):
+class JamendoMusic:
+    def __init__(self, config: JamendoMusicConfig):
         # args의 속성들을 현재 인스턴스에 복사
-        for field_name in args.__dataclass_fields__:
-            setattr(self, field_name, getattr(args, field_name))
+        self.config = config
         """
         Initialize the Jamendo Music API client.
         """
-        if self.save_path is None or isinstance(self.save_path, str) is False:
+        if self.config.save_path is None or isinstance(self.config.save_path, str) is False:
             raise ValueError("save_path must be a valid string path.")
         
         self.base_url = "https://api.jamendo.com"
@@ -151,10 +150,10 @@ class JamendoMusic(JamendoMusicConfig):
         """
         Set the save path for downloaded files.
         """
-        if self.save_path is None or isinstance(self.save_path, str) is False:
+        if self.config.save_path is None or isinstance(self.config.save_path, str) is False:
             raise ValueError("save_path must be a valid string path.")
         self.genre = genre
-        os.makedirs(f"{self.save_path}", exist_ok=True)  # Ensure the save path exists
+        os.makedirs(f"{self.config.save_path}", exist_ok=True)  # Ensure the save path exists
             
     def search_tracks(self,tags=[]):
         """
@@ -162,10 +161,10 @@ class JamendoMusic(JamendoMusicConfig):
         """
         url = f"{self.base_url}/v3.0/tracks"
         params = {
-            'client_id': self.client_id,
+            'client_id': self.config.client_id,
             'format': 'json',
-            'offset': self.offset_start,
-            'limit': self.step,  # Limit the number of results
+            'offset': self.config.offset_start,
+            'limit': self.config.step,  # Limit the number of results
             'tags': tags,  # Tags to filter tracks
             # 'order': 'popularity',  # Order by popularity
             # 'instrumental': '1',  # Only instrumental tracks
@@ -228,12 +227,12 @@ class JamendoMusic(JamendoMusicConfig):
                 if item['audiodownload_allowed']:
                     item['tag'] = self.genre  # Add genre to the item
                     name = self.clean_name(item['name'])
-                    audio = f"{self.save_path}/{self.genre}_{name}.wav"  # Construct the file path
+                    audio = f"{self.config.save_path}/{self.genre}_{name}.wav"  # Construct the file path
                     # Ensure all keys are present in the item
                     row = [name] + [item.get(key, '') for key in ['duration','artist_name','waveform','tag']] + [audio]
                     writer.writerow(row)
 
-            with ThreadPoolExecutor(self.num_threads) as e:
+            with ThreadPoolExecutor(self.config.num_threads) as e:
                 return list(e.map(write_track, tracks))
             
 
@@ -277,26 +276,26 @@ class JamendoMusic(JamendoMusicConfig):
         downloader = functools.partial(
             self.download_url, file_extension=file_extension
         )
-        with ThreadPoolExecutor(self.num_threads) as e:
+        with ThreadPoolExecutor(self.config.num_threads) as e:
             return list(e.map(downloader, tracks))
 
-def main(args):
-    jamendo = JamendoMusic(args)
-    for tag, genre_list in jamendo.tags.items():
+def main(config:JamendoMusicConfig):
+    jamendo = JamendoMusic(config)
+    for tag, genre_list in config.tags.items():
         for idx,genre in enumerate(genre_list):
             jamendo.setPath(genre=genre)
-            for i in range(jamendo.offset_start,jamendo.offset_end, jamendo.step):
+            for i in range(config.offset_start,config.offset_end,config.step):
                 jamendo_tracks = jamendo.search_tracks(tags=[genre])
                 if len(jamendo_tracks) == 0:
                     print(f"No more tracks found at offset {i}.")
                     break
                 print(f"Found {len(jamendo_tracks)} tracks at offset {i}.",genre_list[idx])
                 
-                if jamendo.download:
+                if config.download:
                     jamendo.download_batch(jamendo_tracks, file_extension='wav')
                     print(f"Downloaded {len(jamendo_tracks)} tracks for genre {genre} at offset {i}.")
                 else:
-                    metadata = f"./downloads/metadata.csv"
+                    metadata = os.path.join(config.save_path,"metadata.csv")
                     jamendo.to_csv_batch(jamendo_tracks, filename=metadata)
                     print(f"Tracks saved to {metadata}.")
     return
@@ -304,5 +303,5 @@ def main(args):
 if __name__ == "__main__":
     from argparse_dataclass import ArgumentParser
     parser = ArgumentParser(JamendoMusicConfig)
-    args = parser.parse_args()
-    main(args)
+    config = parser.parse_args()
+    main(config)

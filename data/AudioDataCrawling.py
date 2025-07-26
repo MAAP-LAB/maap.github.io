@@ -4,13 +4,14 @@ from dataclasses import dataclass,field
 from typing import Dict
 
 @dataclass
-class JamendoMusicConfig():
+class JamendoMusicConfig:
     client_id:str="1f75034b"
     save_path:str = './downloads'
     download:bool = False  # Set to True to download tracks, False to save to CSV
     offset_start:int = 0
     offset_end:int = 1000000
     step:int=200 # Set to step number of download, Max is 200  
+    num_threads:int=16
     tags:Dict[str, list] = field(
         default_factory=
             lambda:
@@ -206,7 +207,7 @@ class JamendoMusic(JamendoMusicConfig):
                     row = [name] + [item.get(key, '') for key in ['duration','artist_name','waveform','tag']]
                     writer.writerow(row)
 
-    def to_csv_batch(self,tracks,filename='jamendo_tracks.csv',num_threads: int = 8):
+    def to_csv_batch(self,tracks,filename='jamendo_tracks.csv'):
         """
         Save a batch of tracks to a CSV file.
         """
@@ -232,7 +233,7 @@ class JamendoMusic(JamendoMusicConfig):
                     row = [name] + [item.get(key, '') for key in ['duration','artist_name','waveform','tag']] + [audio]
                     writer.writerow(row)
 
-            with ThreadPoolExecutor(num_threads) as e:
+            with ThreadPoolExecutor(self.num_threads) as e:
                 return list(e.map(write_track, tracks))
             
 
@@ -266,7 +267,7 @@ class JamendoMusic(JamendoMusicConfig):
         else:
             response.raise_for_status()
 
-    def download_batch(self,tracks,file_extension='wav',num_threads: int = 8,):
+    def download_batch(self,tracks,file_extension='wav'):
         """
         Download a batch of tracks.
         """
@@ -276,7 +277,7 @@ class JamendoMusic(JamendoMusicConfig):
         downloader = functools.partial(
             self.download_url, file_extension=file_extension
         )
-        with ThreadPoolExecutor(num_threads) as e:
+        with ThreadPoolExecutor(self.num_threads) as e:
             return list(e.map(downloader, tracks))
 
 def main(args):
@@ -292,7 +293,7 @@ def main(args):
                 print(f"Found {len(jamendo_tracks)} tracks at offset {i}.",genre_list[idx])
                 
                 if jamendo.download:
-                    jamendo.download_batch(jamendo_tracks, file_extension='wav', num_threads=8)
+                    jamendo.download_batch(jamendo_tracks, file_extension='wav')
                     print(f"Downloaded {len(jamendo_tracks)} tracks for genre {genre} at offset {i}.")
                 else:
                     metadata = f"./downloads/metadata.csv"

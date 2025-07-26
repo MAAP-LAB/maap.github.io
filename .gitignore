@@ -1,2 +1,5 @@
 __pycache__
 downloads
+vis_*
+.pytest_cache
+example*

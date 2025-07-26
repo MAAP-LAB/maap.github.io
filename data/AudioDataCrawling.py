@@ -305,4 +305,4 @@ if __name__ == "__main__":
     from argparse_dataclass import ArgumentParser
     parser = ArgumentParser(JamendoMusicConfig)
     args = parser.parse_args()
-    main(args)    
+    main(args)

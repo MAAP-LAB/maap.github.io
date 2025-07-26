@@ -43,18 +43,14 @@ jamendo_project/
 ### 1. 의존성 설치
 
 ```bash
+pip install -e .
 pip install -r requirements.txt
 ```
-
-필요한 주요 패키지:
-- `requests`
-- `argparse-dataclass`
-- `tqdm`
 
 ### 2. 실행 방법
 
 ```bash
-python main.py --download False --save_path ./downloads --step 200
+python -m data.AudioCrawling --download --save_path ./downloads --step 200
 ```
 
 ### 주요 옵션 (전부 `JamendoMusicConfig`에서 설정됨)
@@ -77,13 +73,13 @@ python main.py --download False --save_path ./downloads --step 200
 ### 메타데이터만 저장 (다운로드 X)
 
 ```bash
-python main.py --download False
+python -m data.AudioCrawling
 ```
 
-### 오디오 파일도 다운로드
+### 오디오 파일 다운로드
 
 ```bash
-python main.py --download True --step 100
+python -m data.AudioCrawling --download
 ```
 
 ---

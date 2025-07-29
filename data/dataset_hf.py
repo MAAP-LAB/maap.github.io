@@ -16,7 +16,7 @@ class AudioDataLoaderConfig:
     enable_preprocessing: bool = True
 
     sampling_rate: int = 16000
-    min_duration: int = 200
+    min_duration: int = 30
     max_duration: int = 300
 
     processors: List[str] = field(default_factory=lambda: ['filter_duration', 'map_prepare_dataset'])

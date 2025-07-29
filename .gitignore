@@ -1,5 +1,5 @@
-__pycache__
-downloads
+__pycache__*
+downloads*
 vis_*
-.pytest_cache
+.pytest_cache*
 example*

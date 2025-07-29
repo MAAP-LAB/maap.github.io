@@ -15,8 +15,9 @@ class JamendoMusicConfig:
     
     vocalinstrumental:str='' #{'vocal', 'instrumental'}
     gender:str='' #{'male', 'female'}
-    speed:str='high' #{'verylow', 'low', 'medium', 'high', 'veryhigh'}
+    speed:str='' #{'verylow', 'low', 'medium', 'high', 'veryhigh'}
     lang:str='en'
+    include:str='musicinfo' # {licenses, musicinfo, stats, lyrics}
     tags:Dict[str, list] = field(
         default_factory=
             lambda:
@@ -173,7 +174,8 @@ class JamendoMusic:
             'vocalinstrumental':self.config.vocalinstrumental,
             'gender': self.config.gender,
             'speed' : self.config.speed,
-            'lang' : self.config.lang
+            'lang' : self.config.lang,
+            'include' : self.config.include
         }
 
         response = requests.get(url, params=params)
@@ -227,20 +229,16 @@ class JamendoMusic:
             writer = csv.writer(file)
             # Write header if the file is empty
             if file.tell() == 0:  # Check if the file is empty
-                writer.writerow(['name','duration','artist_name','waveform','tag','speed','gender','vocalinstrumental','lang','audio'])
+                writer.writerow(['name','duration','artist_name','waveform','musicinfo','audio'])
             
             def write_track(item):
                 if item['audiodownload_allowed']:
                     item['tag'] = self.genre  # Add genre to the item
-                    item['speed'] = self.config.speed
-                    item['gender'] = self.config.gender
-                    item['vocalinstrumental'] = self.config.vocalinstrumental
-                    item['lang'] = self.config.lang
 
                     name = self.clean_name(item['name'])
                     audio = f"{self.config.save_path}/{self.genre}_{name}.wav" # Construct the file path
                     # Ensure all keys are present in the item
-                    row = [name] + [item.get(key, '') for key in ['duration','artist_name','waveform','tag','speed','gender','vocalinstrumental','lang']] + [audio]
+                    row = [name] + [item.get(key, '') for key in ['duration','artist_name','waveform','musicinfo']] + [audio]
                     writer.writerow(row)
 
             with ThreadPoolExecutor(self.config.num_threads) as e:
@@ -295,6 +293,7 @@ def main(config:JamendoMusicConfig):
             jamendo.setPath(genre=genre)
             for i in range(config.offset_start,config.offset_end,config.step):
                 jamendo_tracks = jamendo.search_tracks(offset=i,tags=[genre])
+
                 if len(jamendo_tracks) == 0:
                     print(f"No more tracks found at offset {i}.")
                     break

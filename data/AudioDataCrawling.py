@@ -12,6 +12,11 @@ class JamendoMusicConfig:
     offset_end:int = 1000000
     step:int=200 # Set to step number of download, Max is 200  
     num_threads:int=16
+    
+    vocalinstrumental:str='' #{'vocal', 'instrumental'}
+    gender:str='' #{'male', 'female'}
+    speed:str='high' #{'verylow', 'low', 'medium', 'high', 'veryhigh'}
+    lang:str='en'
     tags:Dict[str, list] = field(
         default_factory=
             lambda:
@@ -94,7 +99,6 @@ class JamendoMusicConfig:
 
 class JamendoMusic:
     def __init__(self, config: JamendoMusicConfig):
-        # args의 속성들을 현재 인스턴스에 복사
         self.config = config
         """
         Initialize the Jamendo Music API client.
@@ -155,7 +159,7 @@ class JamendoMusic:
         self.genre = genre
         os.makedirs(f"{self.config.save_path}", exist_ok=True)  # Ensure the save path exists
             
-    def search_tracks(self,tags=[]):
+    def search_tracks(self,offset,tags=[]):
         """
         search for a genre on Jamendo Music.
         """
@@ -163,11 +167,13 @@ class JamendoMusic:
         params = {
             'client_id': self.config.client_id,
             'format': 'json',
-            'offset': self.config.offset_start,
-            'limit': self.config.step,  # Limit the number of results
-            'tags': tags,  # Tags to filter tracks
-            # 'order': 'popularity',  # Order by popularity
-            # 'instrumental': '1',  # Only instrumental tracks
+            'offset': offset,
+            'limit': self.config.step,
+            'tags': tags,
+            'vocalinstrumental':self.config.vocalinstrumental,
+            'gender': self.config.gender,
+            'speed' : self.config.speed,
+            'lang' : self.config.lang
         }
 
         response = requests.get(url, params=params)
@@ -216,20 +222,25 @@ class JamendoMusic:
         if not tracks:
             print("No tracks to save.")
             return
-
-        with open(filename, "a") as file:
+        
+        with open(filename, "a", newline='', encoding='utf-8') as file:
             writer = csv.writer(file)
             # Write header if the file is empty
             if file.tell() == 0:  # Check if the file is empty
-                writer.writerow(['name','duration','artist_name','waveform','tag','audio'])
-
+                writer.writerow(['name','duration','artist_name','waveform','tag','speed','gender','vocalinstrumental','lang','audio'])
+            
             def write_track(item):
                 if item['audiodownload_allowed']:
                     item['tag'] = self.genre  # Add genre to the item
+                    item['speed'] = self.config.speed
+                    item['gender'] = self.config.gender
+                    item['vocalinstrumental'] = self.config.vocalinstrumental
+                    item['lang'] = self.config.lang
+
                     name = self.clean_name(item['name'])
-                    audio = f"{self.config.save_path}/{self.genre}_{name}.wav"  # Construct the file path
+                    audio = f"{self.config.save_path}/{self.genre}_{name}.wav" # Construct the file path
                     # Ensure all keys are present in the item
-                    row = [name] + [item.get(key, '') for key in ['duration','artist_name','waveform','tag']] + [audio]
+                    row = [name] + [item.get(key, '') for key in ['duration','artist_name','waveform','tag','speed','gender','vocalinstrumental','lang']] + [audio]
                     writer.writerow(row)
 
             with ThreadPoolExecutor(self.config.num_threads) as e:
@@ -247,24 +258,22 @@ class JamendoMusic:
 
         name = self.clean_name(data['name'])
 
-        if permission is False:
-            return f"Permission denied for downloading {name} by {artist_name} from album {album_name}."
-        
-        print(f"Downloading {name} by {artist_name} from album {album_name}...")
+        if permission:
+            print(f"Downloading {name} by {artist_name} from album {album_name}...")
 
-        response = requests.get(url, stream=True)
-        
-        if response.status_code == 200:
+            response = requests.get(url, stream=True)
+            
+            if response.status_code == 200:
 
-            if self.genre is not None: file = f"{self.save_path}/{self.genre}_{name}.{file_extension}"
-            else: raise ValueError("Genre must be set before downloading tracks.")
+                if self.genre is not None: file = f"{self.save_path}/{self.genre}_{name}.{file_extension}"
+                else: raise ValueError("Genre must be set before downloading tracks.")
 
-            with open(file, 'wb') as file:
-                for chunk in response.iter_content(chunk_size=8192):
-                    file.write(chunk)
-            return file
-        else:
-            response.raise_for_status()
+                with open(file, 'wb') as file:
+                    for chunk in response.iter_content(chunk_size=8192):
+                        file.write(chunk)
+                return file
+            else:
+                response.raise_for_status()
 
     def download_batch(self,tracks,file_extension='wav'):
         """
@@ -278,14 +287,14 @@ class JamendoMusic:
         )
         with ThreadPoolExecutor(self.config.num_threads) as e:
             return list(e.map(downloader, tracks))
-
+        
 def main(config:JamendoMusicConfig):
     jamendo = JamendoMusic(config)
     for tag, genre_list in config.tags.items():
         for idx,genre in enumerate(genre_list):
             jamendo.setPath(genre=genre)
             for i in range(config.offset_start,config.offset_end,config.step):
-                jamendo_tracks = jamendo.search_tracks(tags=[genre])
+                jamendo_tracks = jamendo.search_tracks(offset=i,tags=[genre])
                 if len(jamendo_tracks) == 0:
                     print(f"No more tracks found at offset {i}.")
                     break

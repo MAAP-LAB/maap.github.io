@@ -203,15 +203,14 @@ class JamendoMusic:
             writer = csv.writer(file)
             # Write header if the file is empty
             if file.tell() == 0:  # Check if the file is empty
-                writer.writerow(['name','duration','artist_name','waveform','tag'])
+                writer.writerow(['name','duration','artist_name','waveform'])
 
             for item in track:
                 if item['audiodownload_allowed']:
-                    item['tag'] = self.genre  # Add genre to the item
                     name = self.clean_name(item['name'])
 
                     # Ensure all keys are present in the item
-                    row = [name] + [item.get(key, '') for key in ['duration','artist_name','waveform','tag']]
+                    row = [name] + [item.get(key, '') for key in ['duration','artist_name','waveform']]
                     writer.writerow(row)
 
     def to_csv_batch(self,tracks,filename='jamendo_tracks.csv'):

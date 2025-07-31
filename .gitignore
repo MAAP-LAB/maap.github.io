@@ -115,3 +115,9 @@ temp/
 clamp3/
 blap/
 Adapters/
+=======
+__pycache__*
+downloads*
+vis_*
+.pytest_cache*
+example*

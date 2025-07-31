@@ -1,3 +1,121 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+
+# Virtual environments
+.env
+.venv/
+env/
+venv/
+ENV/
+env.bak/
+venv.bak/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+
+# Audio files and datasets
+*.wav
+*.mp3
+*.flac
+*.aac
+*.ogg
+*.m4a
+Assets/audios/
+Assets/npys.tar
+Assets/midicaps.tar.gz
+
+# Model weights and checkpoints
+*.pth
+*.pt
+*.ckpt
+*.bin
+*.safetensors
+*.model
+checkpoints/
+weights/
+models/
+
+# Cache directories
+cache/
+__pycache__/
+.cache/
+*.cache
+.pytest_cache/
+
+# Data files
+*.npy
+*.npz
+*.pkl
+*.pickle
+*.hdf5
+*.h5
+
+# Large archives
+*.tar
+*.tar.gz
+*.zip
+*.rar
+*.7z
+
+# Jupyter
+.ipynb_checkpoints/
+*.ipynb
+
+# Logs
+*.log
+logs/
+log/
+
+# Temporary files
+tmp/
+temp/
+*.tmp
+*.temp
+
+# Git LFS tracked files (optional - these will be tracked via LFS)
+# Uncomment if you want to ignore them completely
+# *.tar.gz
+# *.tar
+# *.zip
+
+# Project specific
+clamp3/
+blap/
+Adapters/
+=======
 __pycache__*
 downloads*
 vis_*

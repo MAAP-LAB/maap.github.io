@@ -13,11 +13,12 @@ class JamendoMusicConfig:
     step:int=200 # Set to step number of download, Max is 200  
     num_threads:int=16
     
-    vocalinstrumental:str='' #{'vocal', 'instrumental'}
-    gender:str='' #{'male', 'female'}
-    speed:str='' #{'verylow', 'low', 'medium', 'high', 'veryhigh'}
+    vocalinstrumental:str='vocal' #{'vocal', 'instrumental'}
+    gender:str='female' #{'male', 'female'}
+    speed:str='medium' #{'verylow', 'low', 'medium', 'high', 'veryhigh'}
     lang:str='en'
-    include:str='musicinfo' # {licenses, musicinfo, stats, lyrics}
+    include:str='lyrics' # {licenses, musicinfo, stats, lyrics}
+    lyrics_length=int=500  # Minimum length of lyrics to consider a track valid
     tags:Dict[str, list] = field(
         default_factory=
             lambda:
@@ -203,14 +204,14 @@ class JamendoMusic:
             writer = csv.writer(file)
             # Write header if the file is empty
             if file.tell() == 0:  # Check if the file is empty
-                writer.writerow(['name','duration','artist_name','waveform'])
+                writer.writerow(['name','duration','artist_name'])
 
             for item in track:
                 if item['audiodownload_allowed']:
                     name = self.clean_name(item['name'])
 
                     # Ensure all keys are present in the item
-                    row = [name] + [item.get(key, '') for key in ['duration','artist_name','waveform']]
+                    row = [name] + [item.get(key, '') for key in ['duration','artist_name']]
                     writer.writerow(row)
 
     def to_csv_batch(self,tracks,filename='jamendo_tracks.csv'):
@@ -228,17 +229,22 @@ class JamendoMusic:
             writer = csv.writer(file)
             # Write header if the file is empty
             if file.tell() == 0:  # Check if the file is empty
-                writer.writerow(['name','duration','artist_name','waveform','musicinfo','audio'])
-            
-            def write_track(item):
-                if item['audiodownload_allowed']:
-                    item['tag'] = self.genre  # Add genre to the item
+                writer.writerow(['name','duration','artist_name','tag','speed','gender','lang','lyrics','audio'])
 
-                    name = self.clean_name(item['name'])
-                    audio = f"{self.config.save_path}/{self.genre}_{name}.wav" # Construct the file path
-                    # Ensure all keys are present in the item
-                    row = [name] + [item.get(key, '') for key in ['duration','artist_name','waveform','musicinfo']] + [audio]
-                    writer.writerow(row)
+            def write_track(item):
+                if not item['audiodownload_allowed'] or len(item['lyrics']) < self.config.lyrics_length:
+                    print(f"Skipping {item['name']} by {item['artist_name']} due to insufficient lyrics.")
+                    return
+                
+                item['tag'] = self.genre  # Add genre to the item
+                item['speed'] = self.config.speed  # Add speed to the item
+                item['gender'] = self.config.gender  # Add gender to the item
+                item['lang'] = self.config.lang  # Add language to the item
+                name = self.clean_name(item['name'])
+                audio = f"{self.config.save_path}/{self.genre}_{name}.wav" # Construct the file path
+                # Ensure all keys are present in the item
+                row = [name] + [item.get(key, '') for key in ['duration','artist_name','tag','speed','gender','lang','lyrics']] + [audio]
+                writer.writerow(row)
 
             with ThreadPoolExecutor(self.config.num_threads) as e:
                 return list(e.map(write_track, tracks))
@@ -252,7 +258,12 @@ class JamendoMusic:
         permission= data['audiodownload_allowed']
         artist_name = data['artist_name']
         album_name = '_'.join(data['album_name'].rstrip().lstrip().split(' '))
+        lyrics = data['lyrics']
 
+        if not lyrics or len(lyrics) < self.config.lyrics_length:
+            print(f"Skipping {data['name']} by {artist_name} from album {album_name} due to insufficient lyrics.")
+            return None
+        
         name = self.clean_name(data['name'])
 
         if permission:
@@ -262,7 +273,7 @@ class JamendoMusic:
             
             if response.status_code == 200:
 
-                if self.genre is not None: file = f"{self.save_path}/{self.genre}_{name}.{file_extension}"
+                if self.genre is not None: file = f"{self.config.save_path}/{self.genre}_{name}.{file_extension}"
                 else: raise ValueError("Genre must be set before downloading tracks.")
 
                 with open(file, 'wb') as file:

@@ -116,3 +116,6 @@ temp/
 # *.tar.gz
 # *.tar
 # *.zip
+
+# Project specific
+Assets/

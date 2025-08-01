@@ -30,6 +30,8 @@ ENV/
 env.bak/
 venv.bak/
 
+.claude
+
 # IDE
 .vscode/
 .idea/
@@ -56,6 +58,9 @@ Thumbs.db
 Assets/audios/
 Assets/npys.tar
 Assets/midicaps.tar.gz
+Assets/midi*
+Assets/lmd*
+Assets/npys
 
 # Model weights and checkpoints
 *.pth
@@ -82,6 +87,7 @@ __pycache__/
 *.pickle
 *.hdf5
 *.h5
+*.mid
 
 # Large archives
 *.tar
@@ -110,8 +116,3 @@ temp/
 # *.tar.gz
 # *.tar
 # *.zip
-
-# Project specific
-clamp3/
-blap/
-Adapters/

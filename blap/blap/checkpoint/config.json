@@ -1,0 +1,29 @@
+{
+    "audio_encoder": {
+        "embed_dim_audio": 1024,
+        "joint_dim": 512,
+        "audio_cfg": {
+            "audio_length": 1024,
+            "clip_samples": 480000,
+            "mel_bins": 64,
+            "sample_rate": 48000,
+            "window_size": 1024,
+            "hop_size": 480,
+            "fmin": 50,
+            "fmax": 14000,
+            "class_num": 527,
+            "model_type": "HTSAT",
+            "model_name": "base"
+        }
+    },
+    "LLM": {
+        "t5_model": "google/flan-t5-xl",
+        "repetition_penalty": 10.0
+    },
+    "num_query_tokens": 16,
+    "embed_dim": 256,
+    "max_txt_len": 120,
+    "prompt": "Caption this data:",
+    "apply_lemmatizer": false,
+    "atRandom": true
+}

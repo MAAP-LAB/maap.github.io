@@ -17,9 +17,10 @@ import logging
 from tqdm import tqdm
 
 # Add paths
-sys.path.append(str(Path('C:/Users/hyoun/maap.github.io')))
-sys.path.append(str(Path('C:/Users/hyoun/maap.github.io/clamp3/code')))
-sys.path.append(str(Path('C:/Users/hyoun/maap.github.io/blap')))
+PROJECT_ROOT = str(Path(__file__).resolve().parent.parent)
+sys.path.append(PROJECT_ROOT)
+sys.path.append(PROJECT_ROOT + "/clamp3/code")
+sys.path.append(PROJECT_ROOT + "/blap")
 
 from transformers import BertConfig, T5TokenizerFast, T5Config, BertTokenizer
 from blap.model.BLAP2.modeling_t5 import T5ForConditionalGeneration
@@ -33,7 +34,7 @@ from Adapters.bottleneck_adapter import BottleneckAdapter
 class MusicQADataset(Dataset):
     """Dataset for MusicQA with *.npy files"""
     
-    def __init__(self, json_path: str, npy_base_path: str = "C:/Users/hyoun/maap.github.io/Assets/npys"):
+    def __init__(self, json_path: str, npy_base_path: str = f"{PROJECT_ROOT}/Assets/npys"):
         with open(json_path, 'r') as f:
             self.data = json.load(f)
         
@@ -98,6 +99,9 @@ class SimpleBLAPAdapterTrainer(nn.Module):
         
         self.max_txt_len = self.blap_config.max_txt_len
         self.prompt = self.blap_config.prompt
+
+        self.alpha = 1.0
+        self.beta = 1.0
         
     def _init_clamp3(self, weights_path: str):
         """Initialize and freeze CLaMP3 model"""
@@ -317,31 +321,33 @@ class SimpleBLAPAdapterTrainer(nn.Module):
         return batch_features, batch_masks
     
     def forward(self, batch: Dict) -> Dict[str, torch.Tensor]:
-        """Forward pass with dual-loss training: feature-level MSE + end-to-end cross-entropy"""
+        """Forward pass with proper adapter integration into Q-Former layers"""
         audio_paths = batch['audio_path']
         questions = batch['question']
         answers = batch['answer']
         
         batch_size = len(audio_paths)
         
-        # 1. Load CLaMP3 *.npy features (original ground truth)
+        # 1. Load CLaMP3 *.npy features
         clamp3_features, audio_masks = self.load_npy_features(audio_paths)
         
-        # 2. Apply bottleneck adapter to CLaMP3 features
+        # 2. Initialize query tokens for Q-Former
         query_tokens = self.query_tokens.expand(batch_size, -1, -1)
-        adapter_0 = self.bottleneck_adapters['layer_0']
         
-        # Create dummy residual (zeros) for first adapter
-        dummy_residual = torch.zeros(batch_size, clamp3_features.shape[1], 
-                                   self.qformer_config.encoder_width, device=self.device)
+        # 3. Apply bottleneck adapter for CLaMP3 → Q-Former feature adaptation
+        adapter = self.bottleneck_adapters['layer_0']
         
-        # Apply bottleneck adapter - this needs gradients for feature loss
-        adapted_features = adapter_0(clamp3_features, dummy_residual)
+        # Proper residual connection: use projected CLaMP3 as the "previous state"
+        # This represents the baseline transformation that adapter will refine
+        projected_clamp3 = adapter.projection(clamp3_features)  # (batch, seq, qformer_dim)
         
-        # 3. Feature-level loss: Compare adapter output with original CLaMP3 features
-        # Project original features to same dimension as adapted features for comparison
-        original_projected = adapter_0.projection(clamp3_features)  # (batch, seq, qformer_dim)
-        feature_mse_loss = F.mse_loss(adapted_features, original_projected.detach())
+        # Adapter transformation: projected_clamp3 + adapter_refinement
+        # adapter.forward internally does: residual + up = projected_clamp3 + adapter_output
+        adapted_features = adapter(clamp3_features, projected_clamp3)
+        
+        # 4. Feature-level loss: adapter should improve upon simple projection
+        # Encourage adapter to learn meaningful refinements
+        feature_mse_loss = F.mse_loss(adapted_features, projected_clamp3.detach())
         
         # 4. Q-Former processing - allow gradients to flow through adapter output
         query_output = self.qformer.bert(
@@ -397,9 +403,7 @@ class SimpleBLAPAdapterTrainer(nn.Module):
         qa_loss = outputs.loss
         
         # 6. Dual loss combination (weighted)
-        alpha = 0.5  # Weight for feature loss
-        beta = 1.0   # Weight for QA loss
-        total_loss = alpha * feature_mse_loss + beta * qa_loss
+        total_loss = self.alpha * feature_mse_loss + self.beta * qa_loss
         
         return {
             'loss': total_loss,
@@ -420,7 +424,7 @@ def create_dataloaders(train_json: str, val_json: str, batch_size: int = 2) -> T
             'answer': [item['answer'] for item in batch]
         }
     
-    train_dataset = MusicQADataset(train_json)
+    train_dataset = MusicQADataset(train_json, )
     val_dataset = MusicQADataset(val_json)
     
     train_loader = DataLoader(
@@ -446,6 +450,7 @@ def train_bottleneck_adapters(
     model: SimpleBLAPAdapterTrainer,
     train_loader: DataLoader,
     val_loader: DataLoader,
+    args,
     num_epochs: int = 10,
     learning_rate: float = 1e-4,
     save_dir: str = "./bottleneck_adapter_checkpoints"
@@ -517,34 +522,36 @@ def train_bottleneck_adapters(
                 'optimizer_state_dict': optimizer.state_dict(),
                 'train_loss': avg_train_loss,
                 'val_loss': avg_val_loss,
-            }, save_path / 'best_bottleneck_adapters.pth')
+            }, save_path / f'adapter_mse_ratio_{model.alpha}_ce_ratio_{model.beta}_epoch_{args.epochs}_batch_size_{args.batch_size}.pth')
             
             print(f"✅ Saved best bottleneck adapters at epoch {epoch+1}")
 
 
 def main():
-    parser = argparse.ArgumentParser(description='Train BLAP Bottleneck Adapters')
-    parser.add_argument('--blap_checkpoint', type=str, 
-                       default='C:/Users/hyoun/maap.github.io/blap/blap/checkpoint/checkpoint.ckpt',
-                       help='Path to BLAP checkpoint')
-    parser.add_argument('--clamp3_weights', type=str,
-                        default=CLAMP3_WEIGHTS_PATH,
-                       help='Path to CLaMP3 weights')
-    parser.add_argument('--config_path', type=str,
-                       default='C:/Users/hyoun/maap.github.io/blap/blap/checkpoint/config.json',
-                       help='Path to BLAP config')
-    parser.add_argument('--train_json', type=str,
-                       default='C:/Users/hyoun/maap.github.io/Adapters/PretrainMusicQA_npy.json',
-                       help='Training data JSON')
-    parser.add_argument('--val_json', type=str,
-                       default='C:/Users/hyoun/maap.github.io/Adapters/EvalMusicQA_npy.json',
-                       help='Validation data JSON')
-    parser.add_argument('--batch_size', type=int, default=16, help='Batch size')
-    parser.add_argument('--epochs', type=int, default=4, help='Number of epochs')
-    parser.add_argument('--lr', type=float, default=1e-4, help='Learning rate')
-    parser.add_argument('--save_dir', type=str, default='./projection_adapter_checkpoints',
-                       help='Directory to save checkpoints')
+    BASE = Path(__file__).resolve().parent.parent
     
+    parser = argparse.ArgumentParser(description='Train BLAP Bottleneck Adapters')
+    parser.add_argument('--blap_checkpoint', type=str,
+        default=str(BASE / "blap" / "checkpoint" / "checkpoint.ckpt"),
+        help='Path to BLAP checkpoint')
+    parser.add_argument('--clamp3_weights', type=str,
+        default=str(BASE / "clamp3" / "code" / "weights.pth"),  # 원하는 파일명/위치에 맞게 수정
+        help='Path to CLaMP3 weights')
+    parser.add_argument('--config_path', type=str,
+        default=str(BASE / "blap" / "checkpoint" / "config.json"),
+        help='Path to BLAP config')
+    parser.add_argument('--train_json', type=str,
+        default=str(BASE / "Adapters" / "PretrainMusicQA_npy.json"),
+        help='Training data JSON')
+    parser.add_argument('--val_json', type=str,
+        default=str(BASE / "Adapters" / "EvalMusicQA_npy.json"),
+        help='Validation data JSON')
+    parser.add_argument('--batch_size', type=int, default=64, help='Batch size')
+    parser.add_argument('--epochs', type=int, default=4, help='Number of epochs')
+    parser.add_argument('--lr', type=float, default=3e-4, help='Learning rate')
+    parser.add_argument('--save_dir', type=str,
+        default=str(BASE / "projection_adapter_checkpoints"),
+        help='Directory to save checkpoints')
     args = parser.parse_args()
     
     print("🚀 Starting Simple BLAP Projection Adapter Training")
@@ -572,6 +579,7 @@ def main():
         model=model,
         train_loader=train_loader,
         val_loader=val_loader,
+        args=args,
         num_epochs=args.epochs,
         learning_rate=args.lr,
         save_dir=args.save_dir

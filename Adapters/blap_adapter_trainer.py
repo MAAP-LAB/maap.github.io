@@ -321,31 +321,33 @@ class SimpleBLAPAdapterTrainer(nn.Module):
         return batch_features, batch_masks
     
     def forward(self, batch: Dict) -> Dict[str, torch.Tensor]:
-        """Forward pass with dual-loss training: feature-level MSE + end-to-end cross-entropy"""
+        """Forward pass with proper adapter integration into Q-Former layers"""
         audio_paths = batch['audio_path']
         questions = batch['question']
         answers = batch['answer']
         
         batch_size = len(audio_paths)
         
-        # 1. Load CLaMP3 *.npy features (original ground truth)
+        # 1. Load CLaMP3 *.npy features
         clamp3_features, audio_masks = self.load_npy_features(audio_paths)
         
-        # 2. Apply bottleneck adapter to CLaMP3 features
+        # 2. Initialize query tokens for Q-Former
         query_tokens = self.query_tokens.expand(batch_size, -1, -1)
-        adapter_0 = self.bottleneck_adapters['layer_0']
         
-        # Create dummy residual (zeros) for first adapter
-        dummy_residual = torch.zeros(batch_size, clamp3_features.shape[1], 
-                                   self.qformer_config.encoder_width, device=self.device)
+        # 3. Apply bottleneck adapter for CLaMP3 → Q-Former feature adaptation
+        adapter = self.bottleneck_adapters['layer_0']
         
-        # Apply bottleneck adapter - this needs gradients for feature loss
-        adapted_features = adapter_0(clamp3_features, dummy_residual)
+        # Proper residual connection: use projected CLaMP3 as the "previous state"
+        # This represents the baseline transformation that adapter will refine
+        projected_clamp3 = adapter.projection(clamp3_features)  # (batch, seq, qformer_dim)
         
-        # 3. Feature-level loss: Compare adapter output with original CLaMP3 features
-        # Project original features to same dimension as adapted features for comparison
-        original_projected = adapter_0.projection(clamp3_features)  # (batch, seq, qformer_dim)
-        feature_mse_loss = F.mse_loss(adapted_features, original_projected.detach())
+        # Adapter transformation: projected_clamp3 + adapter_refinement
+        # adapter.forward internally does: residual + up = projected_clamp3 + adapter_output
+        adapted_features = adapter(clamp3_features, projected_clamp3)
+        
+        # 4. Feature-level loss: adapter should improve upon simple projection
+        # Encourage adapter to learn meaningful refinements
+        feature_mse_loss = F.mse_loss(adapted_features, projected_clamp3.detach())
         
         # 4. Q-Former processing - allow gradients to flow through adapter output
         query_output = self.qformer.bert(
@@ -401,8 +403,6 @@ class SimpleBLAPAdapterTrainer(nn.Module):
         qa_loss = outputs.loss
         
         # 6. Dual loss combination (weighted)
-        self.alpha = 1.0  # Weight for feature loss
-        self.beta = 1.0   # Weight for QA loss
         total_loss = self.alpha * feature_mse_loss + self.beta * qa_loss
         
         return {

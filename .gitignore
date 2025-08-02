@@ -117,5 +117,8 @@ temp/
 # *.tar
 # *.zip
 
+Mini*
+exit/
+
 # Project specific
 Assets/

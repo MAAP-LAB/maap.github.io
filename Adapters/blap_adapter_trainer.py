@@ -100,8 +100,9 @@ class SimpleBLAPAdapterTrainer(nn.Module):
         self.max_txt_len = self.blap_config.max_txt_len
         self.prompt = self.blap_config.prompt
 
-        self.alpha = 1.0
-        self.beta = 1.0
+        # Optimized loss weights: favor text generation over feature matching
+        self.alpha = 0.3  # MSE loss weight (feature matching)
+        self.beta = 1.0   # Cross-entropy loss weight (text generation)
         
     def _init_clamp3(self, weights_path: str):
         """Initialize and freeze CLaMP3 model"""
@@ -235,11 +236,11 @@ class SimpleBLAPAdapterTrainer(nn.Module):
         for layer_idx in range(self.qformer_config.num_hidden_layers):
             adapter_name = f"layer_{layer_idx}"
             
-            # Bottleneck adapter: projection -> down -> norm + add -> up
+            # Improved bottleneck adapter: larger capacity for better learning
             adapter = BottleneckAdapter(
                 clamp3_dim=768,                    # CLaMP3 *.npy feature dim
                 qformer_dim=self.qformer_config.encoder_width,  # Q-Former encoder_width (1024)
-                bottleneck_dim=64,                 # Bottleneck dimension
+                bottleneck_dim=128,                # Increased bottleneck dimension
                 dropout=0.1
             )
             
@@ -457,11 +458,18 @@ def train_bottleneck_adapters(
 ):
     """Train only the bottleneck adapters"""
     
-    # Setup optimizer (only bottleneck adapter parameters)
+    # Setup optimizer with improved parameters
     optimizer = torch.optim.AdamW(
         filter(lambda p: p.requires_grad, model.parameters()),
         lr=learning_rate,
-        weight_decay=0.01
+        weight_decay=0.01,
+        betas=(0.9, 0.999),  # Default Adam betas
+        eps=1e-8
+    )
+    
+    # Learning rate scheduler for better convergence
+    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
+        optimizer, T_max=num_epochs, eta_min=learning_rate * 0.1
     )
     
     save_path = Path(save_dir)
@@ -496,6 +504,9 @@ def train_bottleneck_adapters(
         
         avg_train_loss = np.mean(train_losses)
         
+        # Step the learning rate scheduler
+        scheduler.step()
+        
         # Validation
         model.eval()
         val_losses = []
@@ -507,7 +518,8 @@ def train_bottleneck_adapters(
         
         avg_val_loss = np.mean(val_losses)
         
-        print(f"Epoch {epoch+1}: Train Loss: {avg_train_loss:.4f}, Val Loss: {avg_val_loss:.4f}")
+        current_lr = scheduler.get_last_lr()[0]
+        print(f"Epoch {epoch+1}: Train Loss: {avg_train_loss:.4f}, Val Loss: {avg_val_loss:.4f}, LR: {current_lr:.6f}")
         
         # Save best model
         if avg_val_loss < best_val_loss:
@@ -522,7 +534,7 @@ def train_bottleneck_adapters(
                 'optimizer_state_dict': optimizer.state_dict(),
                 'train_loss': avg_train_loss,
                 'val_loss': avg_val_loss,
-            }, save_path / f'adapter_mse_ratio_{model.alpha}_ce_ratio_{model.beta}_epoch_{args.epochs}_batch_size_{args.batch_size}.pth')
+            }, save_path / f'improved_adapter_mse_{model.alpha}_ce_{model.beta}_epochs_{args.epochs}_bs_{args.batch_size}_lr_{args.lr}.pth')
             
             print(f"✅ Saved best bottleneck adapters at epoch {epoch+1}")
 
@@ -546,9 +558,9 @@ def main():
     parser.add_argument('--val_json', type=str,
         default=str(BASE / "Adapters" / "EvalMusicQA_npy.json"),
         help='Validation data JSON')
-    parser.add_argument('--batch_size', type=int, default=64, help='Batch size')
-    parser.add_argument('--epochs', type=int, default=4, help='Number of epochs')
-    parser.add_argument('--lr', type=float, default=3e-4, help='Learning rate')
+    parser.add_argument('--batch_size', type=int, default=32, help='Batch size (reduced for stability)')
+    parser.add_argument('--epochs', type=int, default=12, help='Number of epochs (increased for better convergence)')
+    parser.add_argument('--lr', type=float, default=1e-4, help='Learning rate (reduced for stability)')
     parser.add_argument('--save_dir', type=str,
         default=str(BASE / "projection_adapter_checkpoints"),
         help='Directory to save checkpoints')

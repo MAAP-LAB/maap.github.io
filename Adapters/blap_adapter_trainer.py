@@ -15,6 +15,7 @@ import argparse
 from typing import Dict, List, Optional, Tuple
 import logging
 from tqdm import tqdm
+from torch.cuda.amp import GradScaler, autocast
 
 # Add paths
 PROJECT_ROOT = str(Path(__file__).resolve().parent.parent)
@@ -227,28 +228,20 @@ class SimpleBLAPAdapterTrainer(nn.Module):
         )
     
     def _init_bottleneck_adapters(self):
-        """Initialize bottleneck adapters for Q-Former layers"""
-        print("🔧 Initializing Bottleneck Adapters...")
+        """Initialize single bottleneck adapter for feature preparation"""
+        print("🔧 Initializing Bottleneck Adapter for BERT input...")
         
-        self.bottleneck_adapters = nn.ModuleDict()
+        # Single adapter that prepares CLaMP3 features for bert() function
+        self.feature_adapter = BottleneckAdapter(
+            clamp3_dim=768,                    # CLaMP3 *.npy feature dim
+            qformer_dim=self.qformer_config.encoder_width,  # Q-Former encoder_width (1024)
+            bottleneck_dim=128,                # Bottleneck dimension
+            dropout=0.1
+        )
         
-        # Add adapters to all Q-Former layers (not just cross-attention)
-        for layer_idx in range(self.qformer_config.num_hidden_layers):
-            adapter_name = f"layer_{layer_idx}"
-            
-            # Improved bottleneck adapter: larger capacity for better learning
-            adapter = BottleneckAdapter(
-                clamp3_dim=768,                    # CLaMP3 *.npy feature dim
-                qformer_dim=self.qformer_config.encoder_width,  # Q-Former encoder_width (1024)
-                bottleneck_dim=128,                # Increased bottleneck dimension
-                dropout=0.1
-            )
-            
-            self.bottleneck_adapters[adapter_name] = adapter
-            print(f"  Created bottleneck adapter for layer {layer_idx}: 768 -> 1024 -> 64 -> 1024")
-        
-        total_params = sum(p.numel() for p in self.bottleneck_adapters.parameters())
-        print(f"Total bottleneck adapter parameters: {total_params:,}")
+        total_params = sum(p.numel() for p in self.feature_adapter.parameters())
+        print(f"Feature adapter parameters: {total_params:,}")
+        print("  Single adapter: 768 -> 1024 -> 128 -> 1024")
     
     def _freeze_models(self):
         """Freeze all models except bottleneck adapters"""
@@ -273,7 +266,7 @@ class SimpleBLAPAdapterTrainer(nn.Module):
         for param in self.t5_proj.parameters():
             param.requires_grad = False
         
-        # Verify only bottleneck adapters are trainable
+        # Verify only feature adapter is trainable
         trainable_params = sum(p.numel() for p in self.parameters() if p.requires_grad)
         total_params = sum(p.numel() for p in self.parameters())
         
@@ -322,7 +315,7 @@ class SimpleBLAPAdapterTrainer(nn.Module):
         return batch_features, batch_masks
     
     def forward(self, batch: Dict) -> Dict[str, torch.Tensor]:
-        """Forward pass with proper adapter integration into Q-Former layers"""
+        """Forward pass with adapter feeding features directly to bert() function"""
         audio_paths = batch['audio_path']
         questions = batch['question']
         answers = batch['answer']
@@ -335,25 +328,20 @@ class SimpleBLAPAdapterTrainer(nn.Module):
         # 2. Initialize query tokens for Q-Former
         query_tokens = self.query_tokens.expand(batch_size, -1, -1)
         
-        # 3. Apply bottleneck adapter for CLaMP3 → Q-Former feature adaptation
-        adapter = self.bottleneck_adapters['layer_0']
+        # 3. Apply single feature adapter to prepare features for bert()
+        # Use projected CLaMP3 as the residual baseline
+        projected_clamp3 = self.feature_adapter.projection(clamp3_features)  # (batch, seq, qformer_dim)
         
-        # Proper residual connection: use projected CLaMP3 as the "previous state"
-        # This represents the baseline transformation that adapter will refine
-        projected_clamp3 = adapter.projection(clamp3_features)  # (batch, seq, qformer_dim)
+        # Adapter transformation: baseline + learned refinement
+        adapted_features = self.feature_adapter(clamp3_features, projected_clamp3)
         
-        # Adapter transformation: projected_clamp3 + adapter_refinement
-        # adapter.forward internally does: residual + up = projected_clamp3 + adapter_output
-        adapted_features = adapter(clamp3_features, projected_clamp3)
-        
-        # 4. Feature-level loss: adapter should improve upon simple projection
-        # Encourage adapter to learn meaningful refinements
+        # 4. Feature-level loss: encourage adapter to learn meaningful refinements
         feature_mse_loss = F.mse_loss(adapted_features, projected_clamp3.detach())
         
-        # 4. Q-Former processing - allow gradients to flow through adapter output
+        # 5. Feed adapter output directly to bert() function
         query_output = self.qformer.bert(
             query_embeds=query_tokens,
-            encoder_hidden_states=adapted_features,  # This needs gradients
+            encoder_hidden_states=adapted_features,  # Direct adapter output to bert()
             encoder_attention_mask=audio_masks,
             return_dict=True,
         )
@@ -447,16 +435,16 @@ def create_dataloaders(train_json: str, val_json: str, batch_size: int = 2) -> T
     return train_loader, val_loader
 
 
-def train_bottleneck_adapters(
+def train_feature_adapter(
     model: SimpleBLAPAdapterTrainer,
     train_loader: DataLoader,
     val_loader: DataLoader,
     args,
     num_epochs: int = 10,
     learning_rate: float = 1e-4,
-    save_dir: str = "./bottleneck_adapter_checkpoints"
+    save_dir: str = "./feature_adapter_checkpoints"
 ):
-    """Train only the bottleneck adapters"""
+    """Train only the feature adapter"""
     
     # Setup optimizer with improved parameters
     optimizer = torch.optim.AdamW(
@@ -476,6 +464,8 @@ def train_bottleneck_adapters(
     save_path.mkdir(parents=True, exist_ok=True)
     
     best_val_loss = float('inf')
+
+    scaler = GradScaler()
     
     for epoch in range(num_epochs):
         # Training
@@ -483,24 +473,48 @@ def train_bottleneck_adapters(
         train_losses = []
         
         pbar = tqdm(train_loader, desc=f"Epoch {epoch+1}/{num_epochs}")
-        for batch in pbar:
-            optimizer.zero_grad()
+        optimizer.zero_grad()  # Initialize gradients at start of epoch
+        
+        for i, batch in enumerate(pbar):
+            with autocast():
+                outputs = model(batch)
+                loss = outputs['loss']
+                feature_loss = outputs['feature_mse_loss']
+                qa_loss = outputs['qa_loss']
             
-            outputs = model(batch)
-            loss = outputs['loss']
-            feature_loss = outputs['feature_mse_loss']
-            qa_loss = outputs['qa_loss']
+            # Scale loss by accumulation steps for proper averaging
+            scaled_loss = loss / args.accumulation_steps
+            scaler.scale(scaled_loss).backward()
             
-            loss.backward()
-            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
-            optimizer.step()
+            # Update parameters every accumulation_steps
+            if (i + 1) % args.accumulation_steps == 0:
+                # Unscale gradients for clipping
+                scaler.unscale_(optimizer)
+                torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+                
+                # Step optimizer and update scaler
+                scaler.step(optimizer)
+                scaler.update()
+                optimizer.zero_grad()
             
             train_losses.append(loss.item())
             pbar.set_postfix({
                 'total': f"{loss.item():.4f}",
                 'feat': f"{feature_loss.item():.4f}",
-                'qa': f"{qa_loss.item():.4f}"
+                'qa': f"{qa_loss.item():.4f}",
+                'acc_step': f"{(i + 1) % args.accumulation_steps}"
             })
+        
+        # Handle remaining gradients if batch count doesn't divide evenly
+        if (len(train_loader) % args.accumulation_steps) != 0:
+            # Unscale gradients for clipping
+            scaler.unscale_(optimizer)
+            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+            
+            # Step optimizer and update scaler
+            scaler.step(optimizer)
+            scaler.update()
+            optimizer.zero_grad()
         
         avg_train_loss = np.mean(train_losses)
         
@@ -525,18 +539,18 @@ def train_bottleneck_adapters(
         if avg_val_loss < best_val_loss:
             best_val_loss = avg_val_loss
             
-            # Save only bottleneck adapter weights
-            bottleneck_state_dict = model.bottleneck_adapters.state_dict()
+            # Save only feature adapter weights
+            adapter_state_dict = model.feature_adapter.state_dict()
             
             torch.save({
                 'epoch': epoch,
-                'bottleneck_adapters': bottleneck_state_dict,
+                'feature_adapter': adapter_state_dict,
                 'optimizer_state_dict': optimizer.state_dict(),
                 'train_loss': avg_train_loss,
                 'val_loss': avg_val_loss,
-            }, save_path / f'improved_adapter_mse_{model.alpha}_ce_{model.beta}_epochs_{args.epochs}_bs_{args.batch_size}_lr_{args.lr}.pth')
+            }, save_path / f'feature_adapter_mse_{model.alpha}_ce_{model.beta}_epochs_{args.epochs}_bs_{args.batch_size}_lr_{args.lr}.pth')
             
-            print(f"✅ Saved best bottleneck adapters at epoch {epoch+1}")
+            print(f"✅ Saved best feature adapter at epoch {epoch+1}")
 
 
 def main():
@@ -561,12 +575,13 @@ def main():
     parser.add_argument('--batch_size', type=int, default=32, help='Batch size (reduced for stability)')
     parser.add_argument('--epochs', type=int, default=12, help='Number of epochs (increased for better convergence)')
     parser.add_argument('--lr', type=float, default=1e-4, help='Learning rate (reduced for stability)')
+    parser.add_argument('--accumulation_steps', type=int, default=4, help='Gradient Accumulation')
     parser.add_argument('--save_dir', type=str,
-        default=str(BASE / "projection_adapter_checkpoints"),
+        default=str(BASE / "feature_adapter_checkpoints"),
         help='Directory to save checkpoints')
     args = parser.parse_args()
     
-    print("🚀 Starting Simple BLAP Projection Adapter Training")
+    print("🚀 Starting BLAP Feature Adapter Training")
     print("=" * 60)
     
     # Initialize model
@@ -587,7 +602,7 @@ def main():
     print(f"Val samples: {len(val_loader.dataset)}")
     
     # Start training
-    train_bottleneck_adapters(
+    train_feature_adapter(
         model=model,
         train_loader=train_loader,
         val_loader=val_loader,

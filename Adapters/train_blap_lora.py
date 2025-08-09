@@ -314,7 +314,8 @@ def main():
     parser.add_argument('--config_path', type=str,
         default=str(BASE / "blap" / "checkpoint" / "config.json"),
         help='Path to BLAP config')
-    
+    parser.add_argument("--t5_model", type=str, default="google/flan-t5-base")
+
     # Data paths
     parser.add_argument('--train_json', type=str,
         default=str(BASE / "Adapters" / "FinetuneMusicQA_npy.json"),
@@ -353,6 +354,7 @@ def main():
     model = BLAPLoRATrainer(
         blap_checkpoint_path=args.blap_checkpoint,
         config_path=args.config_path,
+        t5_model_name=args.t5_model,
         lora_r=args.lora_r,
         lora_alpha=args.lora_alpha,
         lora_dropout=args.lora_dropout

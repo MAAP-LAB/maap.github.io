@@ -72,6 +72,7 @@ class BLAPLoRATrainer(nn.Module):
     def __init__(self, 
                  blap_checkpoint_path: str,
                  config_path: str,
+                 t5_model_name: str = "google/flan-t5-base",
                  lora_r: int = 16,
                  lora_alpha: int = 32,
                  lora_dropout: float = 0.1):
@@ -81,6 +82,7 @@ class BLAPLoRATrainer(nn.Module):
         self.lora_r = lora_r
         self.lora_alpha = lora_alpha
         self.lora_dropout = lora_dropout
+        self.t5_model_name = t5_model_name
         
         # Load BLAP configuration
         self.blap_config = BLAP2_Stage2_Config.from_file(config_path)
@@ -102,7 +104,8 @@ class BLAPLoRATrainer(nn.Module):
         # Setup tokenizers
         self.tokenizer = BertTokenizer.from_pretrained("bert-base-uncased", truncation_side="right")
         self.tokenizer.add_special_tokens({"bos_token": "[DEC]"})
-        self.t5_tokenizer = T5TokenizerFast.from_pretrained(self.blap_config.LLM.t5_model)
+        #self.t5_tokenizer = T5TokenizerFast.from_pretrained(self.blap_config.LLM.t5_model)
+        self.t5_tokenizer = T5TokenizerFast.from_pretrained(self.t5_model_name)
         
         self.max_txt_len = self.blap_config.max_txt_len
         self.prompt = self.blap_config.prompt
@@ -148,14 +151,13 @@ class BLAPLoRATrainer(nn.Module):
         """Initialize T5 model"""
         print("📝 Initializing T5...")
         
-        t5_config = T5Config.from_pretrained(self.blap_config.LLM.t5_model)
+        t5_config = T5Config.from_pretrained(self.t5_model_name)
         t5_config.dense_act_fn = "gelu"
-        
+
         self.t5_model = T5ForConditionalGeneration.from_pretrained(
-            self.blap_config.LLM.t5_model,
-            config=t5_config
+        self.t5_model_name, config=t5_config
         )
-        
+       
         # T5 projection
         self.t5_proj = nn.Linear(
             self.qformer_config.hidden_size,

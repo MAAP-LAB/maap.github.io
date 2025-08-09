@@ -16,6 +16,9 @@ from typing import Dict, List, Optional, Tuple
 import logging
 from tqdm import tqdm
 from torch.cuda.amp import GradScaler, autocast
+import matplotlib.pyplot as plt
+import matplotlib
+matplotlib.use('Agg')  # Non-GUI backend for server environments
 
 # Add paths
 PROJECT_ROOT = str(Path(__file__).resolve().parent.parent)
@@ -76,7 +79,8 @@ class SimpleBLAPAdapterTrainer(nn.Module):
     def __init__(self, 
                  blap_checkpoint_path: str,
                  clamp3_weights_path: str,
-                 config_path: str):
+                 config_path: str,
+                 adapter_checkpoint_path: str = None):
         super().__init__()
         
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -89,7 +93,8 @@ class SimpleBLAPAdapterTrainer(nn.Module):
         self._init_qformer_with_checkpoint(blap_checkpoint_path)
         self._init_t5()
         self._init_bottleneck_adapters()
-        
+        if adapter_checkpoint_path:
+            self._load_adapter_checkpoint(adapter_checkpoint_path)
         # Freeze all models except bottleneck adapters
         self._freeze_models()
         
@@ -242,6 +247,48 @@ class SimpleBLAPAdapterTrainer(nn.Module):
         total_params = sum(p.numel() for p in self.feature_adapter.parameters())
         print(f"Feature adapter parameters: {total_params:,}")
         print("  Single adapter: 768 -> 1024 -> 128 -> 1024")
+    
+    def _load_adapter_checkpoint(self, checkpoint_path: str):
+        """Load pre-trained adapter weights"""
+        print(f"🔄 Loading pre-trained adapter from: {checkpoint_path}")
+
+        try:
+            checkpoint = torch.load(checkpoint_path, map_location='cpu', weights_only=False)
+
+            # Extract adapter state dict
+            if 'feature_adapter' in checkpoint:
+                adapter_state_dict = checkpoint['feature_adapter']
+            elif 'bottleneck_adapters' in checkpoint:  # Backward compatibility
+                adapter_state_dict = checkpoint['bottleneck_adapters']
+            else:
+                # Assume the entire checkpoint is the adapter state dict
+                adapter_state_dict = checkpoint
+
+            # Load adapter weights
+            missing_keys, unexpected_keys = self.feature_adapter.load_state_dict(adapter_state_dict, strict=False)
+
+            if missing_keys:
+                print(f"⚠️ Missing keys in adapter checkpoint: {missing_keys}")
+            if unexpected_keys:
+                print(f"⚠️ Unexpected keys in adapter checkpoint: {unexpected_keys}")
+
+            print("✅ Pre-trained adapter weights loaded successfully!")
+
+            # Print checkpoint info if available
+            if isinstance(checkpoint, dict):
+                if 'epoch' in checkpoint:
+                    print(f"   Checkpoint epoch: {checkpoint['epoch']}")
+                if 'train_loss' in checkpoint:
+                    print(f"   Training loss: {checkpoint['train_loss']:.4f}")
+                if 'val_loss' in checkpoint:
+                    print(f"   Validation loss: {checkpoint['val_loss']:.4f}")
+
+        except FileNotFoundError:
+            print(f"❌ Adapter checkpoint not found: {checkpoint_path}")
+            print("   Continuing with randomly initialized adapter...")
+        except Exception as e:
+            print(f"❌ Error loading adapter checkpoint: {e}")
+            print("   Continuing with randomly initialized adapter...")
     
     def _freeze_models(self):
         """Freeze all models except bottleneck adapters"""
@@ -435,13 +482,54 @@ def create_dataloaders(train_json: str, val_json: str, batch_size: int = 2) -> T
     return train_loader, val_loader
 
 
+def plot_training_metrics(epochs, train_losses, val_losses, learning_rates, save_path):
+    """Create and save training metrics plots"""
+    plt.style.use('default')
+    fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(12, 10))
+    
+    # Plot 1: Training and Validation Loss
+    ax1.plot(epochs, train_losses, 'b-', label='Train Loss', linewidth=2, marker='o', markersize=4)
+    ax1.plot(epochs, val_losses, 'r-', label='Validation Loss', linewidth=2, marker='s', markersize=4)
+    ax1.set_xlabel('Epoch')
+    ax1.set_ylabel('Loss')
+    ax1.set_title('Training and Validation Loss Over Time')
+    ax1.legend()
+    ax1.grid(True, alpha=0.3)
+    ax1.set_yscale('log')  # Log scale for better visualization of loss reduction
+    
+    # Add loss reduction annotations
+    if len(train_losses) > 1:
+        train_reduction = ((train_losses[0] - train_losses[-1]) / train_losses[0]) * 100
+        val_reduction = ((val_losses[0] - val_losses[-1]) / val_losses[0]) * 100
+        ax1.text(0.02, 0.98, f'Train Loss Reduction: {train_reduction:.1f}%\nVal Loss Reduction: {val_reduction:.1f}%', 
+                transform=ax1.transAxes, verticalalignment='top', bbox=dict(boxstyle='round', facecolor='white', alpha=0.8))
+    
+    # Plot 2: Learning Rate Schedule
+    ax2.plot(epochs, learning_rates, 'g-', label='Learning Rate', linewidth=2, marker='^', markersize=4)
+    ax2.set_xlabel('Epoch')
+    ax2.set_ylabel('Learning Rate')
+    ax2.set_title('Learning Rate Schedule')
+    ax2.legend()
+    ax2.grid(True, alpha=0.3)
+    ax2.set_yscale('log')  # Log scale for learning rate
+    
+    plt.tight_layout()
+    
+    # Save the plot
+    plot_filename = save_path / 'training_metrics.png'
+    plt.savefig(plot_filename, dpi=300, bbox_inches='tight')
+    plt.close()  # Close to free memory
+    
+    print(f"📊 Training metrics plot saved: {plot_filename}")
+
+
 def train_feature_adapter(
     model: SimpleBLAPAdapterTrainer,
     train_loader: DataLoader,
     val_loader: DataLoader,
     args,
     num_epochs: int = 10,
-    learning_rate: float = 1e-4,
+    learning_rate: float = 1e-5,
     save_dir: str = "./feature_adapter_checkpoints"
 ):
     """Train only the feature adapter"""
@@ -467,6 +555,12 @@ def train_feature_adapter(
 
     scaler = GradScaler()
     
+    # Lists to track training metrics for plotting
+    train_losses_history = []
+    val_losses_history = []
+    learning_rates_history = []
+    epochs_list = []
+    
     for epoch in range(num_epochs):
         # Training
         model.train()
@@ -476,21 +570,21 @@ def train_feature_adapter(
         optimizer.zero_grad()  # Initialize gradients at start of epoch
         
         for i, batch in enumerate(pbar):
-            with autocast():
-                outputs = model(batch)
-                loss = outputs['loss']
-                feature_loss = outputs['feature_mse_loss']
-                qa_loss = outputs['qa_loss']
+            # with autocast():
+            outputs = model(batch)
+            loss = outputs['loss']
+            feature_loss = outputs['feature_mse_loss']
+            qa_loss = outputs['qa_loss']
             
             # Scale loss by accumulation steps for proper averaging
             scaled_loss = loss / args.accumulation_steps
             scaler.scale(scaled_loss).backward()
-            
+            #(loss / args.accumulation_steps).backward()
             # Update parameters every accumulation_steps
             if (i + 1) % args.accumulation_steps == 0:
                 # Unscale gradients for clipping
                 scaler.unscale_(optimizer)
-                torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+                torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=0.5)
                 
                 # Step optimizer and update scaler
                 scaler.step(optimizer)
@@ -535,6 +629,22 @@ def train_feature_adapter(
         current_lr = scheduler.get_last_lr()[0]
         print(f"Epoch {epoch+1}: Train Loss: {avg_train_loss:.4f}, Val Loss: {avg_val_loss:.4f}, LR: {current_lr:.6f}")
         
+        # Record metrics for plotting
+        train_losses_history.append(avg_train_loss)
+        val_losses_history.append(avg_val_loss)
+        learning_rates_history.append(current_lr)
+        epochs_list.append(epoch + 1)
+        
+        # Create and save plots every 2 epochs or at the end
+        if (epoch + 1) % 2 == 0 or epoch == num_epochs - 1:
+            plot_training_metrics(
+                epochs_list, 
+                train_losses_history, 
+                val_losses_history, 
+                learning_rates_history,
+                save_path
+            )
+        
         # Save best model
         if avg_val_loss < best_val_loss:
             best_val_loss = avg_val_loss
@@ -567,15 +677,16 @@ def main():
         default=str(BASE / "blap" / "checkpoint" / "config.json"),
         help='Path to BLAP config')
     parser.add_argument('--train_json', type=str,
-        default=str(BASE / "Adapters" / "PretrainMusicQA_npy.json"),
+        default=str(BASE / "Adapters" / "FinetuneMusicQA_npy.json"),
         help='Training data JSON')
     parser.add_argument('--val_json', type=str,
         default=str(BASE / "Adapters" / "EvalMusicQA_npy.json"),
         help='Validation data JSON')
     parser.add_argument('--batch_size', type=int, default=32, help='Batch size (reduced for stability)')
     parser.add_argument('--epochs', type=int, default=12, help='Number of epochs (increased for better convergence)')
-    parser.add_argument('--lr', type=float, default=1e-4, help='Learning rate (reduced for stability)')
+    parser.add_argument('--lr', type=float, default=1e-5, help='Learning rate (reduced for stability)')
     parser.add_argument('--accumulation_steps', type=int, default=4, help='Gradient Accumulation')
+    parser.add_argument('--adapter_checkpoint', type=str, default=None, help='Path to pre-trained adapter checkpoint to load')
     parser.add_argument('--save_dir', type=str,
         default=str(BASE / "feature_adapter_checkpoints"),
         help='Directory to save checkpoints')
@@ -588,7 +699,8 @@ def main():
     model = SimpleBLAPAdapterTrainer(
         blap_checkpoint_path=args.blap_checkpoint,
         clamp3_weights_path=args.clamp3_weights,
-        config_path=args.config_path
+        config_path=args.config_path,
+        adapter_checkpoint_path=args.adapter_checkpoint
     )
     
     model = model.to(model.device)

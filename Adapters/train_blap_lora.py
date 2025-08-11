@@ -181,8 +181,13 @@ def train_lora_model(
     )
     
     # Learning rate scheduler
-    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
-        optimizer, T_max=args.epochs, eta_min=args.lr * 0.1
+    scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
+    optimizer,
+    mode='min',
+    factor=0.5,
+    patience=3,
+    verbose=True,
+    min_lr=1e-6
     )
     
     # Create save directory
@@ -225,7 +230,7 @@ def train_lora_model(
             loss.backward()
             
             # Gradient clipping
-            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=0.5)
             
             # Optimizer step
             optimizer.step()
@@ -260,8 +265,8 @@ def train_lora_model(
         avg_val_loss = np.mean(val_losses)
         
         # Update scheduler
-        scheduler.step()
-        current_lr = scheduler.get_last_lr()[0]
+        scheduler.step(avg_val_loss)
+        current_lr = optimizer.param_groups[0]['lr']
         
         # ============ LOGGING ============
         print(f"\\nEpoch {epoch+1}/{args.epochs}:")

@@ -24,7 +24,7 @@ sys.path.append(PROJECT_ROOT)
 sys.path.append(PROJECT_ROOT + "/blap")
 
 from transformers import BertConfig, T5TokenizerFast, T5Config, BertTokenizer
-from blap.model.BLAP2.modeling_t5 import T5ForConditionalGeneration
+from transformers import T5ForConditionalGeneration
 from blap.model.BLAP2.QFormer import BertLMHeadModel
 from blap.config.BLAP2_Config import BLAP2_Stage2_Config
 

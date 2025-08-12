@@ -205,7 +205,7 @@ class SABA_Stage2(nn.Module):
             clamp3_audio_features = self.stage1.clamp3.get_audio_features(
                 audio_features, audio_masks, get_global=False
             )
-            adapted_audio_features = self.stage1.audio_adapter(clamp3_audio_features)
+            adapted_audio_features = self.stage1.adapter(clamp3_audio_features)
         
         # 2. Query tokens (from Stage1)
         query_tokens = self.query_tokens.expand(batch_size, -1, -1)
@@ -507,7 +507,7 @@ def test_stage2_forward():
     stage1_model = create_stage1_model()
     
     # Create Stage2 model
-    stage2_model = create_stage2_model(stage1_model, "google/flan-t5-base")  # Use base for testing
+    stage2_model = create_stage2_model(stage1_model, "google/flan-t5-large")  # Use base for testing
     stage2_model.eval()
     
     # Create dummy inputs

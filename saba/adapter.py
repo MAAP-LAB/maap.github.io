@@ -49,29 +49,30 @@ class BottleneckAdapter(nn.Module):
     
     def _init_weights(self):
         """Initialize adapter weights with small random values"""
-        nn.init.xavier_uniform_(self.down_proj.weight, gain=0.02)
-        nn.init.zeros_(self.down_proj.bias)
-        nn.init.xavier_uniform_(self.up_proj.weight, gain=0.02)
-        nn.init.zeros_(self.up_proj.bias)
         nn.init.xavier_uniform_(self.projection.weight, gain=1.0)
-        nn.init.zeros_(self.projection.bias)
+        
+        # Initialize bottleneck layers
+        for module in self.bottleneck:
+            if isinstance(module, nn.Linear):
+                nn.init.xavier_uniform_(module.weight, gain=0.02)
     
-    def forward(self, clamp3_features: torch.Tensor) -> torch.Tensor:
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
         """
-        Forward pass through bottleneck adapter
+        Forward pass with bottleneck transformation
         
         Args:
-            clamp3_features: CLaMP3 features (batch, seq, clamp3_dim)
-            residual: Residual connection from previous layer (batch, seq, qformer_dim)
+            x: Input features [batch, seq_len, clamp3_dim]
             
         Returns:
-            Adapted features (batch, seq, qformer_dim)
+            Adapted features [batch, seq_len, qformer_dim]
         """
         # 1. Project CLaMP3 features to Q-Former dimension
-        projected = self.projection(clamp3_features)  # (batch, seq, qformer_dim)
-        # 2. forwarding Sequentially
-        adapted = self.bottleneck(projected)
-        # residual block
+        projected = self.projection(x)  # (batch, seq, qformer_dim)
+        
+        # 2. Apply bottleneck transformation
+        adapted = self.bottleneck(projected)  # (batch, seq, qformer_dim)
+        
+        # 3. Residual connection
         output = projected + adapted
         
         return output

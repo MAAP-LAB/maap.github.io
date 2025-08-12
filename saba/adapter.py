@@ -30,36 +30,33 @@ class BottleneckAdapter(nn.Module):
     def __init__(self, 
                  clamp3_dim: int = 768,           # CLaMP3 *.npy feature dimension
                  qformer_dim: int = 1024,         # Q-Former encoder_width (from BLAP checkpoint)
-                 bottleneck_dim: int = 64,        # Bottleneck dimension (smaller)
+                 bottleneck_dim: int = 128,        # Bottleneck dimension (smaller)
+                 ckpt_path: str = None,
                  dropout: float = 0.1):
         super().__init__()
         
         self.projection = nn.Linear(clamp3_dim, qformer_dim, bias=False)
-    
-        self.down = nn.Linear(qformer_dim, bottleneck_dim, bias=False)
-        
-        self.norm = nn.LayerNorm(bottleneck_dim)
-        
-        self.up = nn.Linear(bottleneck_dim, qformer_dim, bias=False)
-        self.dropout = nn.Dropout(dropout)
-        
-        self.act = SwiGLU(bottleneck_dim)
-        
+
+        self.bottleneck = nn.Sequential(
+              nn.Linear(qformer_dim, bottleneck_dim, bias=False)
+            , nn.LayerNorm(bottleneck_dim)
+            , SwiGLU(bottleneck_dim)
+            , nn.Dropout(dropout)
+            , nn.Linear(bottleneck_dim, qformer_dim, bias=False)
+        )
         # Initialize weights
         self._init_weights()
     
     def _init_weights(self):
-        """Initialize adapter weights"""
-        # Initialize projection
-        nn.init.xavier_uniform_(self.projection.weight)
-        
-        # Initialize down projection
-        nn.init.xavier_uniform_(self.down.weight)
-        
-        # Initialize up projection to near zero (important for stability)
-        nn.init.zeros_(self.up.weight)
+        """Initialize adapter weights with small random values"""
+        nn.init.xavier_uniform_(self.down_proj.weight, gain=0.02)
+        nn.init.zeros_(self.down_proj.bias)
+        nn.init.xavier_uniform_(self.up_proj.weight, gain=0.02)
+        nn.init.zeros_(self.up_proj.bias)
+        nn.init.xavier_uniform_(self.projection.weight, gain=1.0)
+        nn.init.zeros_(self.projection.bias)
     
-    def forward(self, clamp3_features: torch.Tensor, residual: torch.Tensor) -> torch.Tensor:
+    def forward(self, clamp3_features: torch.Tensor) -> torch.Tensor:
         """
         Forward pass through bottleneck adapter
         
@@ -72,21 +69,9 @@ class BottleneckAdapter(nn.Module):
         """
         # 1. Project CLaMP3 features to Q-Former dimension
         projected = self.projection(clamp3_features)  # (batch, seq, qformer_dim)
-        
-        # 2. Down projection
-        down = self.down(projected)  # (batch, seq, bottleneck_dim)
-        
-        # 3. Norm + Add (residual connection at bottleneck level)
-        normed = self.norm(down)  # (batch, seq, bottleneck_dim)
-        
-        # 4. Activation + Dropout
-        activated = self.act(normed)
-        activated = self.dropout(activated)
-        
-        # 5. Up projection
-        up = self.up(activated)  # (batch, seq, qformer_dim)
-        
-        # 6. Final residual connection with original residual
-        output = residual + up
+        # 2. forwarding Sequentially
+        adapted = self.bottleneck(projected)
+        # residual block
+        output = projected + adapted
         
         return output

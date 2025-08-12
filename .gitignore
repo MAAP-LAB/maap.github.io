@@ -68,6 +68,7 @@ Assets/midicaps.tar.gz
 Assets/midi*
 Assets/lmd*
 Assets/npys
+Assets/clotho
 
 # Model weights and checkpoints
 *.pth

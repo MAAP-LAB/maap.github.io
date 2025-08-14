@@ -1,15 +1,14 @@
 """
-Stage 2: QFormer + Flan-T5 Integration with LoRA
-목표: Stage1에서 학습된 QFormer와 Flan-T5를 LoRA로 fine-tuning하여 Audio task 수행
+Stage 2: QFormer + Flan-T5 Integration
+목표: Stage1에서 학습된 QFormer와 Flan-T5를 통합하여 Audio task 수행
 
 Architecture:
 1. Stage1 Model: Pre-trained CLaMP3 + Adapter + QFormer (frozen)
-2. QFormer: Fine-tune with LoRA for audio-specific adaptation  
-3. Flan-T5: LoRA-based fine-tuning for text generation
+2. QFormer: Stage1에서 pre-trained된 QFormer 활용
+3. Flan-T5: Text generation을 위한 T5 모델
 4. Audio Task: Music QA, Captioning, Analysis
 
 Key Features:
-- LoRA fine-tuning으로 효율적인 adaptation
 - Stage1의 32 query embeddings 활용
 - Audio-to-text generation pipeline
 - Pre-aligning through contrastive learning
@@ -21,6 +20,7 @@ import torch.nn.functional as F
 from typing import Dict, List, Optional, Tuple, Union
 from pathlib import Path
 import sys
+from saba.base_models import SABABase
 
 # Add project paths
 PROJECT_ROOT = str(Path(__file__).resolve().parent.parent)
@@ -29,131 +29,71 @@ sys.path.append(PROJECT_ROOT + "/clamp3/code")
 sys.path.append(PROJECT_ROOT + "/blap")
 
 from transformers import T5ForConditionalGeneration, T5Tokenizer, T5Config, BertConfig
-from peft import LoraConfig, get_peft_model, TaskType, PeftModel
 from saba.SABA_stage1 import SABA_Stage1
 from saba.qformer import BertLMHeadModel, BertModel
+from saba.SABA_outputs import SABAStage2Output
 
-
-class LoRAQFormer(nn.Module):
-    """QFormer with LoRA adaptation for audio-specific fine-tuning"""
-    
-    def __init__(self, 
-                 stage1_qformer: BertModel,
-                 lora_config: LoraConfig = None):
-        super().__init__()
-        
-        # Use pre-trained QFormer from Stage1
-        self.base_qformer = stage1_qformer
-        
-        # Default LoRA config for QFormer
-        if lora_config is None:
-            lora_config = LoraConfig(
-                r=16,                # Low-rank dimension
-                lora_alpha=32,       # LoRA scaling parameter  
-                target_modules=["query", "key", "value", "dense"],  # Target attention layers
-                lora_dropout=0.1,
-                bias="none",
-                task_type=TaskType.FEATURE_EXTRACTION
-            )
-        
-        # Apply LoRA to QFormer
-        self.qformer = get_peft_model(self.base_qformer, lora_config)
-        
-        print(f"✅ LoRA QFormer initialized with rank {lora_config.r}")
-    
-    def forward(self, **kwargs):
-        """Forward pass through LoRA-adapted QFormer"""
-        return self.qformer(**kwargs)
-
-
-class LoRAFlanT5(nn.Module):
-    """Flan-T5 with LoRA adaptation for text generation"""
-    
-    def __init__(self, 
-                 model_name: str = "google/flan-t5-large",
-                 lora_config: LoraConfig = None):
-        super().__init__()
-        
-        # Load Flan-T5 base model
-        self.config = T5Config.from_pretrained(model_name)
-        self.base_model = T5ForConditionalGeneration.from_pretrained(
-            model_name,
-            config=self.config,
-            torch_dtype=torch.float16,
-            device_map="auto"
-        )
-        
-        # Default LoRA config for Flan-T5
-        if lora_config is None:
-            lora_config = LoraConfig(
-                r=32,                # Higher rank for generative task
-                lora_alpha=64,       # Higher scaling for T5
-                target_modules=["q", "k", "v", "o", "wi_0", "wi_1", "wo"],  # T5 specific modules
-                lora_dropout=0.1,
-                bias="none", 
-                task_type=TaskType.SEQ_2_SEQ_LM
-            )
-        
-        # Apply LoRA to Flan-T5
-        self.model = get_peft_model(self.base_model, lora_config)
-        
-        # Tokenizer
-        self.tokenizer = T5Tokenizer.from_pretrained(model_name)
-        
-        print(f"✅ LoRA Flan-T5 initialized with rank {lora_config.r}")
-    
-    def forward(self, **kwargs):
-        """Forward pass through LoRA-adapted Flan-T5"""
-        return self.model(**kwargs)
-    
-    def generate(self, **kwargs):
-        """Text generation with LoRA-adapted model"""
-        return self.model.generate(**kwargs)
-
-
-class SABA_Stage2(nn.Module):
+class SABA_Stage2(SABABase):
     """
-    Stage 2: QFormer + Flan-T5 Integration with LoRA
+    Stage 2: QFormer + Flan-T5 Integration
     
     This model combines:
-    1. Pre-trained Stage1 model (frozen CLaMP3 + Adapter + QFormer base)
-    2. LoRA-adapted QFormer for audio-specific fine-tuning
-    3. LoRA-adapted Flan-T5 for text generation
+    1. Pre-trained Stage1 model (frozen CLaMP3 + Adapter + QFormer)
+    2. QFormer from Stage1 (can be fine-tuned)
+    3. Flan-T5 for text generation
     4. Projection layers for connecting QFormer outputs to T5 inputs
     """
     
     def __init__(self,
-                 stage1_model: SABA_Stage1,
+                 stage1_model: SABA_Stage1 = None,
+                 qformer_config: Dict = None,
+                 blap_checkpoint_path: str = None,
                  flan_t5_model: str = "google/flan-t5-large",
-                 qformer_lora_config: LoraConfig = None,
-                 t5_lora_config: LoraConfig = None,
-                 freeze_stage1: bool = True):
-        super().__init__()
+                 freeze_stage1: bool = True,
+                 freeze_qformer: bool = False,
+                 freeze_t5: bool = False,
+                 num_query_tokens: int = 32,
+                 embed_dim: int = 256,
+                 device_name: str = "auto"):
         
-        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         
-        # 1. Pre-trained Stage1 model
+        # Device 설정
+        if device_name == "auto":
+            device_name = "cuda" if torch.cuda.is_available() else "cpu"
+            
+        # SABABase 초기화
+        super().__init__(
+            qformer_config=qformer_config,
+            blap_checkpoint_path=blap_checkpoint_path,
+            num_query_tokens=num_query_tokens,
+            embed_dim=embed_dim,
+            device_name=device_name
+        )
+        
+        # 1. Stage1 model (optional, for compatibility)
         self.stage1 = stage1_model
-        
-        # Freeze Stage1 components for Stage2 training
-        if freeze_stage1:
+        if stage1_model and freeze_stage1:
             self._freeze_stage1()
         
-        # 2. LoRA-adapted QFormer (separate from Stage1 QFormer)
-        self.lora_qformer = LoRAQFormer(
-            stage1_qformer=stage1_model.qformer,
-            lora_config=qformer_lora_config
+        # 2. Flan-T5 model
+        self.t5_config = T5Config.from_pretrained(flan_t5_model)
+        self.flan_t5 = T5ForConditionalGeneration.from_pretrained(
+            flan_t5_model,
+            config=self.t5_config,
+            torch_dtype=torch.float16,
+            device_map="auto"
         )
+        self.t5_tokenizer = T5Tokenizer.from_pretrained(flan_t5_model)
         
-        # 3. LoRA-adapted Flan-T5
-        self.lora_flan_t5 = LoRAFlanT5(
-            model_name=flan_t5_model,
-            lora_config=t5_lora_config
-        )
+        # Freeze components if requested
+        if freeze_qformer:
+            self.freeze_qformer()
+        if freeze_t5:
+            self._freeze_t5()
         
-        # 4. Projection layer: QFormer hidden_size -> T5 hidden_size
-        qformer_hidden_size = stage1_model.qformer.config.hidden_size
-        t5_hidden_size = self.lora_flan_t5.config.d_model
+        # 3. Projection layer: QFormer hidden_size -> T5 hidden_size
+        qformer_hidden_size = self.qformer.config.hidden_size
+        t5_hidden_size = self.t5_config.d_model
         
         self.qformer_to_t5_proj = nn.Linear(qformer_hidden_size, t5_hidden_size)
         
@@ -174,22 +114,73 @@ class SABA_Stage2(nn.Module):
         print(f"   QFormer hidden size: {qformer_hidden_size}")
         print(f"   T5 hidden size: {t5_hidden_size}")
         print(f"   Query tokens: {self.num_query_tokens}")
+        print(f"   Stage1 frozen: {freeze_stage1}")
+        print(f"   QFormer frozen: {freeze_qformer}")
+        print(f"   T5 frozen: {freeze_t5}")
     
-    def _freeze_stage1(self):
-        """Freeze all Stage1 components"""
-        for param in self.stage1.parameters():
-            param.requires_grad = False
-        print("🧊 Stage1 components frozen")
-    
-    def get_trainable_parameters(self) -> int:
-        """Get number of trainable parameters"""
-        return sum(p.numel() for p in self.parameters() if p.requires_grad)
+    def initQformer(self, checkpoint_path: str):
+        """Initialize Q-Former and load from BLAP checkpoint"""
+        print("🤖 Initializing Q-Former from BLAP checkpoint...")
+
+        # Create Q-Former config
+        qformer_config = BertConfig.from_pretrained("bert-base-uncased")
+        qformer_config.encoder_width = 1024  # BLAP checkpoint uses 1024, not 1408
+        qformer_config.add_cross_attention = True
+        qformer_config.cross_attention_freq = 2
+        qformer_config.query_length = self.blap_config.num_query_tokens
+
+        self.qformer_config = qformer_config
+
+        # Initialize Q-Former
+        self.qformer = BertLMHeadModel(qformer_config)
+
+        # Initialize query tokens
+        self.query_tokens = nn.Parameter(
+            torch.zeros(1, self.blap_config.num_query_tokens, qformer_config.hidden_size)
+        )
+        self.query_tokens.data.normal_(mean=0.0, std=qformer_config.initializer_range)
+
+        # Load from BLAP checkpoint
+        if checkpoint_path and Path(checkpoint_path).exists():
+            try:
+                checkpoint = torch.load(checkpoint_path, map_location='cpu')
+
+                # Extract state dict
+                if 'state_dict' in checkpoint:
+                    state_dict = checkpoint['state_dict']
+                else:
+                    state_dict = checkpoint
+
+                # Filter Q-Former related weights
+                qformer_state_dict = {}
+                query_token_state = None
+
+                for key, value in state_dict.items():
+                    if 'qformer' in key:
+                        # Remove prefix
+                        new_key = key.replace('qformer.', '')
+                        qformer_state_dict[new_key] = value
+                    elif 'query_tokens' in key:
+                        query_token_state = value
+
+                # Load Q-Former weights
+                if qformer_state_dict:
+                    missing_keys, unexpected_keys = self.qformer.load_state_dict(qformer_state_dict, strict=False)
+                    print(f"✅ Q-Former loaded with {len(missing_keys)} missing, {len(unexpected_keys)} unexpected keys")
+
+                # Load query tokens
+                if query_token_state is not None:
+                    self.query_tokens.data.copy_(query_token_state)
+                    print("✅ Query tokens loaded successfully")
+
+            except Exception as e:
+                print(f"⚠️ Warning: Could not load BLAP checkpoint: {e}")
     
     def extract_audio_features(self,
                               audio_features: torch.Tensor,
                               audio_masks: torch.Tensor) -> torch.Tensor:
         """
-        Extract audio features using Stage1 pipeline + LoRA QFormer
+        Extract audio features using Stage1 pipeline + QFormer
         
         Args:
             audio_features: Audio features [batch, seq_len, feat_dim]
@@ -210,8 +201,8 @@ class SABA_Stage2(nn.Module):
         # 2. Query tokens (from Stage1)
         query_tokens = self.query_tokens.expand(batch_size, -1, -1)
         
-        # 3. LoRA QFormer cross-attention (trainable)
-        query_outputs = self.lora_qformer(
+        # 3. QFormer cross-attention
+        query_outputs = self.qformer(
             query_embeds=query_tokens,
             encoder_hidden_states=adapted_audio_features,
             encoder_attention_mask=audio_masks,
@@ -260,7 +251,7 @@ class SABA_Stage2(nn.Module):
             prompted_texts = text_inputs
         
         # 3. Tokenize text inputs
-        text_tokens = self.lora_flan_t5.tokenizer(
+        text_tokens = self.tokenizer(
             prompted_texts,
             padding=True,
             truncation=True,
@@ -270,7 +261,7 @@ class SABA_Stage2(nn.Module):
         
         # 4. Get T5 text embeddings
         with torch.no_grad():
-            text_embeddings = self.lora_flan_t5.model.encoder.embed_tokens(
+            text_embeddings = self.flan_t5.encoder.embed_tokens(
                 text_tokens.input_ids
             )  # [batch, text_len, t5_hidden]
         
@@ -309,7 +300,7 @@ class SABA_Stage2(nn.Module):
         Returns:
             Dictionary with loss and logits
         """
-        # 1. Extract audio features through Stage1 + LoRA QFormer
+        # 1. Extract audio features through Stage1 + QFormer
         query_embeddings = self.extract_audio_features(audio_features, audio_masks)
         
         # 2. Prepare T5 inputs
@@ -323,7 +314,7 @@ class SABA_Stage2(nn.Module):
         # 3. Training mode: compute loss with target texts
         if target_texts is not None:
             # Tokenize target texts
-            target_tokens = self.lora_flan_t5.tokenizer(
+            target_tokens = self.tokenizer(
                 target_texts,
                 padding=True,
                 truncation=True,
@@ -333,10 +324,10 @@ class SABA_Stage2(nn.Module):
             
             # Prepare labels (mask padding tokens)
             labels = target_tokens.input_ids.clone()
-            labels[labels == self.lora_flan_t5.tokenizer.pad_token_id] = -100
+            labels[labels == self.tokenizer.pad_token_id] = -100
             
             # T5 forward pass
-            t5_outputs = self.lora_flan_t5(
+            t5_outputs = self.flan_t5(
                 inputs_embeds=t5_inputs["inputs_embeds"],
                 attention_mask=t5_inputs["attention_mask"],
                 decoder_attention_mask=target_tokens.attention_mask,
@@ -393,66 +384,66 @@ class SABA_Stage2(nn.Module):
             t5_inputs = self.prepare_t5_inputs(query_embeddings, text_inputs, task_type)
             
             # 3. Generate with T5
-            generated_tokens = self.lora_flan_t5.generate(
+            generated_tokens = self.flan_t5.generate(
                 inputs_embeds=t5_inputs["inputs_embeds"],
                 attention_mask=t5_inputs["attention_mask"],
                 max_length=max_length,
                 num_beams=num_beams,
                 temperature=temperature,
                 do_sample=do_sample,
-                pad_token_id=self.lora_flan_t5.tokenizer.pad_token_id,
-                eos_token_id=self.lora_flan_t5.tokenizer.eos_token_id
+                pad_token_id=self.tokenizer.pad_token_id,
+                eos_token_id=self.tokenizer.eos_token_id
             )
             
             # 4. Decode generated tokens
-            generated_texts = self.lora_flan_t5.tokenizer.batch_decode(
+            generated_texts = self.tokenizer.batch_decode(
                 generated_tokens, skip_special_tokens=True
             )
             
             return generated_texts
     
-    def save_lora_adapters(self, save_directory: str):
-        """Save LoRA adapters"""
+    def save_model(self, save_directory: str):
+        """Save Stage2 model components"""
         save_path = Path(save_directory)
         save_path.mkdir(parents=True, exist_ok=True)
         
-        # Save QFormer LoRA
-        qformer_path = save_path / "qformer_lora"
-        self.lora_qformer.qformer.save_pretrained(qformer_path)
+        # Save QFormer
+        qformer_path = save_path / "qformer"
+        torch.save({
+            "model_state_dict": self.qformer.state_dict(),
+            "config": self.qformer.config
+        }, qformer_path.with_suffix(".pth"))
         
-        # Save T5 LoRA  
-        t5_path = save_path / "flan_t5_lora"
-        self.lora_flan_t5.model.save_pretrained(t5_path)
+        # Save T5 model
+        t5_path = save_path / "flan_t5"
+        self.flan_t5.save_pretrained(t5_path)
         
         # Save projection layer
         torch.save({
             "qformer_to_t5_proj": self.qformer_to_t5_proj.state_dict(),
             "config": {
-                "qformer_hidden_size": self.lora_qformer.qformer.config.hidden_size,
-                "t5_hidden_size": self.lora_flan_t5.config.d_model,
+                "qformer_hidden_size": self.qformer.config.hidden_size,
+                "t5_hidden_size": self.t5_config.d_model,
                 "num_query_tokens": self.num_query_tokens
             }
         }, save_path / "projection_layer.pth")
         
-        print(f"✅ LoRA adapters saved to {save_directory}")
+        print(f"✅ Stage2 model saved to {save_directory}")
     
-    def load_lora_adapters(self, load_directory: str):
-        """Load LoRA adapters"""
+    def load_model(self, load_directory: str):
+        """Load Stage2 model components"""
         load_path = Path(load_directory)
         
-        # Load QFormer LoRA
-        qformer_path = load_path / "qformer_lora"
+        # Load QFormer
+        qformer_path = load_path / "qformer.pth"
         if qformer_path.exists():
-            self.lora_qformer.qformer = PeftModel.from_pretrained(
-                self.lora_qformer.base_qformer, qformer_path
-            )
+            checkpoint = torch.load(qformer_path, map_location=self.device)
+            self.qformer.load_state_dict(checkpoint["model_state_dict"])
         
-        # Load T5 LoRA
-        t5_path = load_path / "flan_t5_lora" 
+        # Load T5 model
+        t5_path = load_path / "flan_t5"
         if t5_path.exists():
-            self.lora_flan_t5.model = PeftModel.from_pretrained(
-                self.lora_flan_t5.base_model, t5_path
-            )
+            self.flan_t5 = T5ForConditionalGeneration.from_pretrained(t5_path)
         
         # Load projection layer
         proj_path = load_path / "projection_layer.pth"
@@ -460,39 +451,23 @@ class SABA_Stage2(nn.Module):
             checkpoint = torch.load(proj_path, map_location=self.device)
             self.qformer_to_t5_proj.load_state_dict(checkpoint["qformer_to_t5_proj"])
             
-        print(f"✅ LoRA adapters loaded from {load_directory}")
+        print(f"✅ Stage2 model loaded from {load_directory}")
 
 
 # Factory functions
 def create_stage2_model(stage1_model: SABA_Stage1,
-                       flan_t5_model: str = "google/flan-t5-large") -> SABA_Stage2:
+                       flan_t5_model: str = "google/flan-t5-large",
+                       freeze_stage1: bool = True,
+                       freeze_qformer: bool = False,
+                       freeze_t5: bool = False) -> SABA_Stage2:
     """Create Stage2 model from pre-trained Stage1"""
-    
-    # Custom LoRA configs
-    qformer_lora_config = LoraConfig(
-        r=16,
-        lora_alpha=32,
-        target_modules=["query", "key", "value", "dense"],
-        lora_dropout=0.1,
-        bias="none",
-        task_type=TaskType.FEATURE_EXTRACTION
-    )
-    
-    t5_lora_config = LoraConfig(
-        r=32,
-        lora_alpha=64,
-        target_modules=["q", "k", "v", "o", "wi_0", "wi_1", "wo"],
-        lora_dropout=0.1,
-        bias="none",
-        task_type=TaskType.SEQ_2_SEQ_LM
-    )
     
     model = SABA_Stage2(
         stage1_model=stage1_model,
         flan_t5_model=flan_t5_model,
-        qformer_lora_config=qformer_lora_config,
-        t5_lora_config=t5_lora_config,
-        freeze_stage1=True
+        freeze_stage1=freeze_stage1,
+        freeze_qformer=freeze_qformer,
+        freeze_t5=freeze_t5
     )
     
     print(f"Stage2 model created with {model.get_trainable_parameters():,} trainable parameters")
@@ -507,7 +482,7 @@ def test_stage2_forward():
     stage1_model = create_stage1_model()
     
     # Create Stage2 model
-    stage2_model = create_stage2_model(stage1_model, "google/flan-t5-large")  # Use base for testing
+    stage2_model = create_stage2_model(stage1_model, "google/flan-t5-base")  # Use base for testing
     stage2_model.eval()
     
     # Create dummy inputs
@@ -549,6 +524,6 @@ def test_stage2_forward():
 
 
 if __name__ == "__main__":
-    print("🚀 Testing Stage 2: QFormer + Flan-T5 with LoRA")
+    print("🚀 Testing Stage 2: QFormer + Flan-T5")
     test_stage2_forward()
     print("✅ All tests passed!")

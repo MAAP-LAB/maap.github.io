@@ -327,85 +327,112 @@ def train_adapter_with_musicqa(
     """
     Main training function for SABA adapter using MusicQA dataset
     """
-    
-    # Setup logging
-    logging.basicConfig(level=logging.INFO)
+    # Setup logging (once)
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s | %(levelname)s | %(message)s",
+        datefmt="%H:%M:%S",
+    )
     logger = logging.getLogger(__name__)
-    
+
     # Create save directory
     save_path = Path(save_dir)
     save_path.mkdir(exist_ok=True, parents=True)
-    
+
     # Create dataloaders
     train_loader, val_loader = create_dataloaders(train_json, val_json, batch_size)
-    logger.info(f"📊 Created dataloaders: {len(train_loader)} train, {len(val_loader)} val batches")
-    
+    logger.info(f"📊 Dataloaders ready — train batches: {len(train_loader)}, val batches: {len(val_loader)}")
+
     # Initialize trainer
     trainer = AdapterTrainer(
         blap_checkpoint_path=blap_checkpoint,
         bottleneck_dim=bottleneck_dim,
-        learning_rate=learning_rate
+        learning_rate=learning_rate,
+        device="cuda" if torch.cuda.is_available() else "cpu",
     )
-    
-    # Training loop
-    best_val_loss = float('inf')
-    
-    for epoch in range(num_epochs):
-        logger.info(f"\n🔥 Epoch {epoch+1}/{num_epochs}")
-        
-        # Training
-        trainer.model.train()
-        epoch_metrics = {
-            'total_loss': 0.0,
-            'contrastive_loss': 0.0,
-            'matching_loss': 0.0,
-            'captioning_loss': 0.0
-        }
-        
-        train_pbar = tqdm(train_loader, desc=f"Training Epoch {epoch+1}")
-        for batch_idx, batch in enumerate(train_pbar):
-            metrics = trainer.train_step(batch)
-            
-            # Accumulate metrics
-            for key in epoch_metrics:
-                epoch_metrics[key] += metrics[key]
-            
-            # Update progress bar
-            train_pbar.set_postfix({
-                'loss': f"{metrics['total_loss']:.4f}",
-                'lr': f"{metrics['learning_rate']:.2e}"
-            })
-        
-        # Average training metrics
-        for key in epoch_metrics:
-            epoch_metrics[key] /= len(train_loader)
-        
-        logger.info(f"📈 Train - Loss: {epoch_metrics['total_loss']:.4f}, "
-                   f"ATC: {epoch_metrics['contrastive_loss']:.4f}, "
-                   f"ATM: {epoch_metrics['matching_loss']:.4f}, "
-                   f"LM: {epoch_metrics['captioning_loss']:.4f}")
-        
-        # Validation
-        val_metrics = trainer.validate(val_loader)
-        logger.info(f"📉 Val - Loss: {val_metrics['total_loss']:.4f}, "
-                   f"ATC: {val_metrics['contrastive_loss']:.4f}, "
-                   f"ATM: {val_metrics['matching_loss']:.4f}, "
-                   f"LM: {val_metrics['captioning_loss']:.4f}")
-        
-        # Save best model
-        if val_metrics['total_loss'] < best_val_loss:
-            best_val_loss = val_metrics['total_loss']
-            best_model_path = save_path / f"best_adapter_epoch_{epoch+1}.pth"
-            trainer.save_adapter(str(best_model_path))
-            logger.info(f"🌟 New best model saved!")
-        
-        # Save checkpoint every few epochs
-        if (epoch + 1) % 5 == 0:
-            checkpoint_path = save_path / f"adapter_checkpoint_epoch_{epoch+1}.pth"
-            trainer.save_adapter(str(checkpoint_path))
-    
-    logger.info(f"🎉 Training completed! Best val loss: {best_val_loss:.4f}")
+
+    best_val_loss = float("inf")
+    best_model_path = None
+
+    try:
+        for epoch in range(num_epochs):
+            logger.info(f"\n🔥 Epoch {epoch + 1}/{num_epochs}")
+
+            # ---- Training ----
+            trainer.model.train()
+            epoch_metrics = {
+                "total_loss": 0.0,
+                "contrastive_loss": 0.0,
+                "matching_loss": 0.0,
+                "captioning_loss": 0.0,
+            }
+
+            train_pbar = tqdm(train_loader, desc=f"Training Epoch {epoch + 1}", dynamic_ncols=True)
+            for batch_idx, batch in enumerate(train_pbar):
+                metrics = trainer.train_step(batch)
+
+                # Accumulate metrics
+                for k in epoch_metrics:
+                    epoch_metrics[k] += metrics[k]
+
+                train_pbar.set_postfix({
+                    "loss": f"{metrics['total_loss']:.4f}",
+                    "lr": f"{metrics['learning_rate']:.2e}",
+                })
+
+            # Average training metrics
+            num_train_batches = max(len(train_loader), 1)
+            for k in epoch_metrics:
+                epoch_metrics[k] /= num_train_batches
+
+            logger.info(
+                "📈 Train — "
+                f"Loss: {epoch_metrics['total_loss']:.4f} | "
+                f"ATC: {epoch_metrics['contrastive_loss']:.4f} | "
+                f"ATM: {epoch_metrics['matching_loss']:.4f} | "
+                f"LM: {epoch_metrics['captioning_loss']:.4f}"
+            )
+
+            # ---- Validation ----
+            val_metrics = trainer.validate(val_loader)
+            logger.info(
+                "📉 Val   — "
+                f"Loss: {val_metrics['total_loss']:.4f} | "
+                f"ATC: {val_metrics['contrastive_loss']:.4f} | "
+                f"ATM: {val_metrics['matching_loss']:.4f} | "
+                f"LM: {val_metrics['captioning_loss']:.4f}"
+            )
+
+            # Step LR scheduler (ReduceLROnPlateau expects a metric)
+            if hasattr(trainer, "scheduler") and trainer.scheduler is not None:
+                trainer.scheduler.step(val_metrics["total_loss"])
+                current_lr = trainer.optimizer.param_groups[0]["lr"]
+                logger.info(f"🪜 LR after scheduler step: {current_lr:.2e}")
+
+            # ---- Checkpointing ----
+            if val_metrics["total_loss"] < best_val_loss:
+                best_val_loss = val_metrics["total_loss"]
+                best_model_path = save_path / f"best_adapter_epoch_{epoch + 1}.pth"
+                trainer.save_adapter(str(best_model_path))
+                logger.info("🌟 New best model saved!")
+
+            # (Optional) periodic checkpoint
+            if (epoch + 1) % 5 == 0:
+                checkpoint_path = save_path / f"adapter_checkpoint_epoch_{epoch + 1}.pth"
+                trainer.save_adapter(str(checkpoint_path))
+                logger.info(f"💾 Periodic checkpoint saved: {checkpoint_path.name}")
+
+        logger.info(f"🎉 Training completed! Best val loss: {best_val_loss:.4f}")
+        if best_model_path is not None:
+            logger.info(f"🏆 Best checkpoint: {best_model_path}")
+
+    except KeyboardInterrupt:
+        logger.warning("⛔ Training interrupted by user.")
+    except Exception as e:
+        logger.exception(f"❌ Error during training: {e}")
+
     return trainer
+
 
 
 if __name__ == "__main__":
